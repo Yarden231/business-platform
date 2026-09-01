@@ -1,0 +1,48 @@
+# Secrets and local configuration — never commit real values.
+# .env.example is tracked and must contain placeholders only.
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+.npm/
+
+# Test and coverage output
+coverage/
+test-results/
+playwright-report/
+blob-report/
+.playwright/
+
+# Local infrastructure state
+postgres-data/
+azurite-data/
+*.sqlite3
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
