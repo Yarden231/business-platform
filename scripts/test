@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+#
+# Run every test suite in the repository. Exits non-zero on the first failure.
+
+set -euo pipefail
+# shellcheck source=scripts/_lib.sh
+source "$(dirname "$0")/_lib.sh"
+
+require_installed_dependencies
+load_env
+require_database
+
+section "API tests (pytest)"
+cd "${REPO_ROOT}/apps/api"
+uv run pytest
+
+section "Web tests (vitest)"
+cd "${REPO_ROOT}"
+npm run test --workspace apps/web
+
+section "All tests passed"

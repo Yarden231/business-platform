@@ -1,0 +1,165 @@
+[project]
+name = "cohen-balancing-api"
+version = "0.1.0"
+description = "Case management API for Cohen Financial Balancing"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "alembic>=1.16",
+  "asyncpg>=0.30",
+  "fastapi>=0.121.0",
+  "pydantic-settings>=2.10",
+  "sqlalchemy[asyncio]>=2.0.44",
+  "structlog>=25.4",
+  "uvicorn[standard]>=0.38.0",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28.1",
+  "import-linter>=2.3",
+  "mypy>=1.18.2",
+  "pytest>=8.4.2",
+  "pytest-asyncio>=1.2.0",
+  "ruff>=0.14.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+# ---------------------------------------------------------------------------
+# Formatting and linting
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["."]
+
+[tool.ruff.lint]
+select = [
+  "A",    # flake8-builtins
+  "ANN",  # flake8-annotations
+  "B",    # flake8-bugbear
+  "C4",   # flake8-comprehensions
+  "DTZ",  # flake8-datetimez
+  "E",    # pycodestyle errors
+  "F",    # pyflakes
+  "G",    # flake8-logging-format
+  "I",    # isort
+  "LOG",  # flake8-logging
+  "N",    # pep8-naming
+  "PT",   # flake8-pytest-style
+  "PTH",  # flake8-use-pathlib
+  "RET",  # flake8-return
+  "RUF",  # ruff-specific
+  "S",    # flake8-bandit
+  "SIM",  # flake8-simplify
+  "T20",  # flake8-print — no print-debugging in committed code
+  "TID",  # flake8-tidy-imports
+  "UP",   # pyupgrade
+  "W",    # pycodestyle warnings
+]
+
+[tool.ruff.lint.per-file-ignores]
+# S101: assert is how tests assert.
+# S105/S106: the fake credentials a security test needs are the test.
+"tests/*" = ["S101", "S105", "S106"]
+# Revision files are named `<revision>_<slug>.py` so the schema's history is
+# readable from a directory listing. Alembic loads them by path, never by
+# import, so an identifier-shaped module name buys nothing.
+"migrations/versions/*" = ["N999"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "tests"]
+
+# ---------------------------------------------------------------------------
+# Type checking
+# ---------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.12"
+files = ["app", "tests", "migrations"]
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error"]
+
+# ---------------------------------------------------------------------------
+# Import boundaries
+# ---------------------------------------------------------------------------
+# The layering of docs/architecture.md §4, enforced rather than described
+# (ADR-0003). Layers a phase has not created yet are marked optional with
+# parentheses: the rule is declared once, and the packages that later phases
+# add are governed from the moment they exist.
+
+[tool.importlinter]
+root_packages = ["app", "tests"]
+# Required so the contracts below can name third-party packages such as
+# `sqlalchemy` and `fastapi`, not only first-party modules.
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Application code never imports test code"
+type = "forbidden"
+source_modules = ["app"]
+forbidden_modules = ["tests"]
+
+[[tool.importlinter.contracts]]
+name = "Backend layers depend in one direction only"
+type = "layers"
+exhaustive = false
+layers = [
+  "app.main",
+  "app.api",
+  "app.schemas",
+  "(app.services)",
+  "(app.auth)",
+  "app.audit : (app.storage)",
+  "(app.repositories)",
+  "app.models",
+  "app.db",
+  "app.domain",
+  "app.core",
+]
+
+[[tool.importlinter.contracts]]
+# A layers contract only forbids the upward direction; reaching *past* the
+# service layer, straight from a router into the ORM, is downward and has to be
+# forbidden explicitly. `app.api.dependencies` names one persistence type to
+# wire the request-scoped session, which is wiring, not a query.
+name = "The HTTP layer never touches the ORM models"
+type = "forbidden"
+source_modules = ["app.api"]
+forbidden_modules = ["app.models"]
+
+[[tool.importlinter.contracts]]
+name = "The domain layer is pure"
+type = "forbidden"
+source_modules = ["app.domain"]
+forbidden_modules = ["sqlalchemy", "fastapi", "starlette", "alembic"]
+
+[[tool.importlinter.contracts]]
+# Only `app.main` and `app.api` may know that this application speaks HTTP.
+# Everything below them has to be callable from a script, a scheduled job or a
+# test without a request in sight.
+name = "Only the HTTP layer imports the web framework"
+type = "forbidden"
+source_modules = ["app.audit", "app.core", "app.db", "app.domain", "app.models", "app.schemas"]
+forbidden_modules = ["fastapi", "starlette"]

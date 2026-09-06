@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+#
+# Start the local development stack: PostgreSQL, Azurite, the API and the web
+# application. Any extra arguments are passed straight to `docker compose up`
+# (for example: ./scripts/dev --detach).
+
+set -euo pipefail
+# shellcheck source=scripts/_lib.sh
+source "$(dirname "$0")/_lib.sh"
+
+require_command docker
+require_env_file
+
+cd "${REPO_ROOT}"
+
+section "Starting the development stack"
+echo "  web    http://localhost:${WEB_PORT:-3000}"
+echo "  api    http://localhost:${API_PORT:-8000}       (developer diagnostics)"
+echo "  health http://localhost:${WEB_PORT:-3000}/api/v1/healthz"
+echo
+
+exec docker compose up --build "$@"

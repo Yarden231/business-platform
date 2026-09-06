@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+#
+# Every quality gate the repository enforces, in one command. GitHub Actions
+# runs this exact script, so "passing locally" and "passing in CI" mean the
+# same thing. Exits non-zero on the first failure.
+
+set -euo pipefail
+# shellcheck source=scripts/_lib.sh
+source "$(dirname "$0")/_lib.sh"
+
+require_command docker
+require_installed_dependencies
+load_env
+require_database
+
+section "Compose configuration"
+cd "${REPO_ROOT}"
+# Also proves .env.example declares every variable the stack needs, because CI
+# builds its .env from nothing else.
+docker compose config --quiet
+
+section "API — ruff format"
+cd "${REPO_ROOT}/apps/api"
+uv run ruff format --check .
+
+section "API — ruff lint"
+uv run ruff check .
+
+section "API — mypy"
+uv run mypy
+
+section "API — import boundaries"
+uv run lint-imports
+
+# Runs against a real PostgreSQL database, built by `alembic upgrade head`.
+# Migration drift is one of these tests: tests/integration/test_migrations.py
+# fails if the models describe a schema the migrations do not produce.
+section "API — pytest"
+uv run pytest
+
+section "Web — prettier"
+cd "${REPO_ROOT}"
+npx prettier --check .
+
+section "Web — eslint"
+npm run lint --workspace apps/web
+
+section "Web — typescript"
+npm run typecheck --workspace apps/web
+
+section "Web — vitest"
+npm run test --workspace apps/web
+
+section "Web — production build"
+npm run build --workspace apps/web
+
+section "All checks passed"

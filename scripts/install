@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#
+# Install every dependency the repository needs to run its quality gates
+# outside Docker. CI runs this script before ./scripts/check, so local and CI
+# installs cannot drift.
+
+set -euo pipefail
+# shellcheck source=scripts/_lib.sh
+source "$(dirname "$0")/_lib.sh"
+
+require_command uv
+require_command npm
+
+section "API dependencies (uv)"
+cd "${REPO_ROOT}/apps/api"
+uv sync --locked --all-groups
+
+section "Web dependencies (npm workspaces)"
+cd "${REPO_ROOT}"
+npm ci
+
+section "Done"
+echo "Run ./scripts/check to verify the repository, or ./scripts/dev to start the stack."

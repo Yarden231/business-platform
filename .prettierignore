@@ -1,0 +1,15 @@
+# Generated or vendored output
+node_modules/
+.next/
+coverage/
+package-lock.json
+uv.lock
+next-env.d.ts
+
+# Python is formatted by ruff, not prettier
+apps/api/
+
+# Hand-written documentation: prose and tables are formatted by their authors,
+# not reflowed by a code formatter.
+docs/
+README.md
