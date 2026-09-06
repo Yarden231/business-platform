@@ -1,21 +1,21 @@
 # Architecture
 
-> **Status:** Phases 0–3 implemented; the rest is the agreed target design.
+> **Status:** Phases 0–4 implemented; the rest is the agreed target design.
 >
 > **In the repository today:** the runtime topology and migration workflow of §3; **every package of
 > §4** — `main`, `api`, `schemas`, `services`, `repositories`, `auth`, `audit`, `models`, `db`,
 > `domain`, `core`, `cli` — and the import contracts that hold them apart; the middleware chain, error
 > envelope and transaction boundary of §5; the **authentication provider boundary, session management
-> and role gates of §6**; the audit recorder and its append-only table in §7, now carrying real
-> authentication events; the **Hebrew RTL web shell, login UI, typed API client and generated
-> OpenAPI types of §9**; the configuration, logging and health endpoints of §10; the test-database
-> harness of §11; and the quality gates of §12 including migration-drift detection and the
-> OpenAPI-types freshness check.
+> and role gates of §6**; the **person-access predicate and people object policies of §6**; the audit
+> recorder and its append-only table in §7, now carrying real authentication and person events; the
+> **Hebrew RTL web shell, login UI, people directory, typed API client and generated OpenAPI types of
+> §9**; the configuration, logging and health endpoints of §10; the test-database harness of §11,
+> including the `create_person` factory; and the quality gates of §12 including migration-drift
+> detection and the OpenAPI-types freshness check.
 >
-> **Still design:** the object- and query-scoping halves of §6 (they need `people` and `cases` to scope
-> *to*), §8 (document storage), and the feature-facing parts of §7 (case workflow,
-> `last_activity_at`). This document is updated at the end of every implementation phase to match the
-> code.
+> **Still design:** the case object- and query-scoping halves of §6, §8 (document storage), and the
+> feature-facing parts of §7 (case workflow, `last_activity_at`). This document is updated at the end
+> of every implementation phase to match the code.
 > Last reviewed: 2026-09-06
 
 ## 1. Purpose and constraints
@@ -306,13 +306,14 @@ Three mechanisms, used deliberately:
   case creation, assignment management, archiving, global audit). **Implemented**, along with
   `ensure_password_rotated`, the gate that keeps an account holding a temporary password confined to
   the three endpoints it needs in order to escape that state.
-- **Object policies** — `ensure_can_view_case`, `ensure_can_edit_case`, `ensure_can_archive_case`,
-  `ensure_can_review_document`, `ensure_can_view_person_detail`, `ensure_can_edit_person`. Pure
-  functions over `(actor, access_facts)`, where the facts are resolved once per request. **Not
-  written yet, on purpose:** an `ensure_can_view_case` authored before `cases` exists would be a
-  guess. They arrive with the phases that introduce those objects.
-- **Query scoping** — actor-scoped repository methods for every list/aggregate query (ADR-0013).
-  Arrives with the entities that need scoping.
+- **Object policies** — `ensure_can_edit_person` and `ensure_can_archive_person` are **implemented**.
+  They consume facts from `PersonAccessService.has_full_access`; they do not query. Case and document
+  policies (`ensure_can_view_case`, `ensure_can_edit_case`, `ensure_can_archive_case`,
+  `ensure_can_review_document`) are **not written yet, on purpose:** an `ensure_can_view_case`
+  authored before `cases` exists would be a guess. Person *reads* are not a 403 policy — they degrade
+  to `PersonSummary` (ADR-0027).
+- **Query scoping** — the people directory is not actor-scoped: every staff member may search it.
+  Case lists will be actor-scoped (ADR-0013) when those tables exist.
 
 The actor itself is a frozen five-field dataclass — id, email, name, role, `must_change_password` —
 resolved from the session cookie by the `CurrentActor` dependency. Raw session ORM rows never leave
@@ -321,10 +322,12 @@ field that is not part of the authenticated identity.
 
 Person access is resolved by a single predicate,
 `PersonAccessService.has_full_access(actor, person_id)` — true for any `ADMIN`, and for an `EMPLOYEE`
-only when that person has an active participation in a case currently assigned to them. Both
-`ensure_can_view_person_detail` and `ensure_can_edit_person` consume it, and the response schema
-(`PersonDetail` vs `PersonSummary`) is chosen from the same result, so the read scope, the write scope
-and the serialised field set cannot drift apart (ADR-0027).
+only when that person has an active participation in a case currently assigned to them. Until those
+tables exist the employee branch is honestly `False`. `ensure_can_edit_person` consumes the predicate,
+and the response schema (`PersonDetail` vs `PersonSummary`) is chosen from the same result, so the
+read scope, the write scope and the serialised field set cannot drift apart (ADR-0027). `PersonDetail`
+is built in one function (`_detail_of` / `_represent`); create returns detail because the caller
+authored the values, and that grant does not persist past the request.
 
 Hiding a button in the UI is never an authorization mechanism; the web app hides controls purely for
 usability and every corresponding endpoint enforces the same rule independently, with tests asserting
@@ -401,19 +404,20 @@ graph LR
 
 ```text
 apps/web/src/
-  app/                      App Router: (auth)/login, (app)/ home and change-password
+  app/                      App Router: (auth)/login, (app)/ home, change-password, people
   components/ui/            shadcn/ui primitives (RTL-verified)
   components/               Shared presentational components, including the application shell
   features/auth/            Login and password-change forms, zod schemas, TanStack Query hooks
+  features/people/          Directory list, create/edit forms, person detail
   lib/api/                  Typed fetch client + generated OpenAPI types + error mapping
-  lib/                      Formatting (dates, numbers), utils, constants
+  lib/                      Formatting (dates, numbers), identifiers, utils, constants
   messages/he.ts            Single Hebrew message catalog, accessed through t()
   proxy.ts                  Cookie-presence redirect to /login (UX only)
 ```
 
-Phase 3 filled this in. `(auth)/login` is the public screen; `(app)/` is the authenticated shell.
-People, cases, documents and the dashboard routes arrive with those phases — the home page says so
-rather than inventing placeholder screens.
+Phase 3 filled the shell. Phase 4 added `/people`, `/people/new` and `/people/[personId]` (including
+`/edit`). Cases, documents and the dashboard routes still arrive with those phases — the home page
+says so rather than inventing placeholder screens.
 
 - **Typed contract, no drift.** `lib/api/schema.d.ts` is generated from the API's OpenAPI document by
   `openapi-typescript` and checked in; CI regenerates it and fails if it differs. Request/response

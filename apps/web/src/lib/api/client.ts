@@ -12,7 +12,17 @@
 import { API_PREFIX } from '@/lib/constants';
 import { CSRF_HEADER_NAME, readCsrfToken } from '@/lib/api/csrf';
 import { ApiError, apiErrorFromResponse, NetworkError } from '@/lib/api/errors';
-import type { CurrentUser, LoginBody, PasswordChangeBody } from '@/lib/api/types';
+import type {
+  CurrentUser,
+  LoginBody,
+  PasswordChangeBody,
+  PersonCasesList,
+  PersonCreateBody,
+  PersonDetail,
+  PersonList,
+  PersonRead,
+  PersonUpdateBody,
+} from '@/lib/api/types';
 
 const UNSAFE_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
 
@@ -117,4 +127,60 @@ export function isUnauthenticated(error: unknown): boolean {
 
 export function isPasswordChangeRequired(error: unknown): boolean {
   return error instanceof ApiError && error.code === 'PASSWORD_CHANGE_REQUIRED';
+}
+
+export type PeopleListParams = {
+  query?: string;
+  page?: number;
+  pageSize?: number;
+  archived?: boolean;
+};
+
+function peopleQueryString(params: PeopleListParams): string {
+  const search = new URLSearchParams();
+  if (params.query) {
+    search.set('query', params.query);
+  }
+  if (params.page !== undefined) {
+    search.set('page', String(params.page));
+  }
+  if (params.pageSize !== undefined) {
+    search.set('page_size', String(params.pageSize));
+  }
+  if (params.archived === true) {
+    search.set('archived', 'true');
+  }
+  const encoded = search.toString();
+  return encoded === '' ? '' : `?${encoded}`;
+}
+
+export function listPeople(
+  params: PeopleListParams = {},
+  signal?: AbortSignal,
+): Promise<PersonList> {
+  return apiRequest<PersonList>(`/people${peopleQueryString(params)}`, { signal });
+}
+
+export function getPerson(personId: string, signal?: AbortSignal): Promise<PersonRead> {
+  return apiRequest<PersonRead>(`/people/${personId}`, { signal });
+}
+
+export function createPerson(body: PersonCreateBody): Promise<PersonDetail> {
+  return apiRequest<PersonDetail>('/people', { method: 'POST', body });
+}
+
+export function updatePerson(personId: string, body: PersonUpdateBody): Promise<PersonDetail> {
+  return apiRequest<PersonDetail>(`/people/${personId}`, { method: 'PATCH', body });
+}
+
+export function archivePerson(personId: string): Promise<void> {
+  return apiRequest<void>(`/people/${personId}/archive`, { method: 'POST' });
+}
+
+export function unarchivePerson(personId: string): Promise<void> {
+  return apiRequest<void>(`/people/${personId}/unarchive`, { method: 'POST' });
+}
+
+export function listPersonCases(personId: string, signal?: AbortSignal): Promise<PersonCasesList> {
+  return apiRequest<PersonCasesList>(`/people/${personId}/cases`, { signal });
 }

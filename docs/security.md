@@ -3,7 +3,7 @@
 > **Status:** Describes the controls Release 1 will implement and the ones deliberately deferred.
 > Updated at the end of every phase to reflect what is actually enforced in code.
 >
-> **Enforced in code today (after Phase 2):**
+> **Enforced in code today (after Phase 4):**
 >
 > - **§2 authentication in full** — Argon2id hashing with configured parameters and transparent
 >   rehashing, the password policy, uniform login failure, the dummy-hash timing defence, per-identity
@@ -13,8 +13,10 @@
 >   writes, immediate revocation on logout/password change/reset/deactivation, and the session-bound
 >   double-submit CSRF check;
 > - **§4 role authorization** — the `ADMIN`/`EMPLOYEE` rows of the matrix that concern login, password
->   change, user administration and the staff directory. The person- and case-level rows are still
->   design, because those entities do not exist yet;
+>   change, user administration, the staff directory, and the people directory. Person representation
+>   and `PATCH` rights come from `PersonAccessService.has_full_access` (ADR-0027). Until cases exist
+>   that predicate is `ADMIN` only, so an employee always receives `PersonSummary` and cannot edit or
+>   archive. The case-level rows are still design;
 > - the same-origin topology of §3 — the browser reaches the API only through the web origin;
 > - the error-handling rules of §5: one envelope, stable codes, and a `500` that carries nothing but a
 >   generic message and a `request_id`, asserted by tests that look for the exception text, the
@@ -29,12 +31,16 @@
 >   process with a default session secret, a non-TLS database URL, insecure session cookies, or
 >   debug/docs/SQL-echo enabled.
 >
-> **Still design:** the person and case rows of §4 (authorization), and §6 (uploads).
+> **Still design:** the case rows of §4 (authorization), and §6 (uploads).
 >
 > **Phase 3 added the browser screens:** login, forced password change, the application shell and
 > logout. The session cookie remains `HttpOnly` and `SameSite=Lax`; the browser reads `csrf_token`
 > and sends `X-CSRF-Token` on unsafe requests. Nothing authentication-related is written to
 > `localStorage` or `sessionStorage`.
+>
+> **Phase 4 added the people directory screens** and the person-access predicate. Audit `changes` for
+> `id_number` are `{before, after: "[redacted]"}`; create metadata records `identifier_present` and
+> `id_type`, never the number.
 > Last reviewed: 2026-09-06
 
 ## 1. What we are protecting
@@ -214,8 +220,8 @@ alone is treated as one layer, not the answer:
 ## 4. Authorization
 
 Server-side, always, with three complementary mechanisms (details in
-[`architecture.md`](architecture.md) §6). Release 1 role matrix — the first three rows are **enforced
-in code today**; the rest are design, because `people`, `cases` and `documents` do not exist yet:
+[`architecture.md`](architecture.md) §6). Release 1 role matrix — the login, user-administration and
+people-directory rows are **enforced in code today**; the case and document rows are still design:
 
 | Capability | `ADMIN` | `EMPLOYEE` |
 | --- | --- | --- |

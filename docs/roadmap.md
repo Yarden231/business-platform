@@ -1,6 +1,6 @@
 # Implementation roadmap
 
-> **Status:** Phases 0, 1, 2 and 3 complete. Phases 4–10 are planned. This document is the agreed
+> **Status:** Phases 0, 1, 2, 3 and 4 complete. Phases 5–10 are planned. This document is the agreed
 > sequencing for Release 1; each phase updates it with actual status on completion.
 > Last reviewed: 2026-09-06
 
@@ -172,11 +172,12 @@ clean with no `any`.
 - Session and CSRF tokens are never written to `localStorage` or `sessionStorage`; a test fails the
   build if any file under `src/` mentions web storage.
 
-## Phase 4 — People directory
+## Phase 4 — People directory — **COMPLETE**
 
 **Goal:** the first business entity, end to end.
 
-- Migration for `people` with the partial unique ID index and trigram indexes.
+- Migration for `people` with the typed identifier pair, `UNIQUE (id_type, id_number)` and trigram
+  indexes (revision `0002`).
 - Israeli ID validation (format + check digit) in `domain`, unit tested; duplicate detection returning
   `409`.
 - Endpoints: list/search with pagination, create, read, update, archive/unarchive, person's cases.
@@ -202,6 +203,23 @@ clean with no `any`.
 **Exit criteria:** the same person can be reused across cases in Phase 5 without duplication; every
 endpoint has an authorization test; no code path can serialise `PersonDetail` without passing the
 predicate; invariant 14 in [`domain-model.md`](domain-model.md) §9 is covered. Requires Q7.
+
+**Exit criteria — met for everything Phase 4 can honestly assert.** Q7 is **ADR-0040**. The two tests
+that need a case participation (`PATCH` succeeds once assigned; access disappears when the
+participation or assignment is removed) wait for Phase 5 — inventing a grant would have been a fake.
+Invariant 14's employee-with-a-case half is therefore deferred with those tests; the predicate they
+will extend is already the only path to `PersonDetail` on a read.
+
+**Delivered as designed, with these notes:**
+
+- **Identifier model.** Not the original partial unique on `id_number`. `id_type` is
+  `ISRAELI_ID` | `PASSPORT` | `FOREIGN_ID`; there is no `COMPANY_NUMBER`. Both columns NULL or both
+  present; a person may have no identifier; uniqueness is the composite pair.
+- **Phase 4-safe authorization.** `has_full_access` is `ADMIN` only. Employees search and create;
+  list/GET degrade to `PersonSummary`; `PATCH` is `403 PERSON_ACCESS_DENIED`; archive is `403`.
+  `GET /people/{id}/cases` is an empty page (the person must still exist).
+- **Factories.** `create_person` landed here, as Phase 1 said it would.
+- **No cases.** Person rows carry no case role. `PARTY_A` and the rest arrive on `case_participants`.
 
 ## Phase 5 — Cases, participants and assignments
 

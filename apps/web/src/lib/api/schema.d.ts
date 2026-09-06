@@ -121,6 +121,115 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/v1/people': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List people
+     * @description Paginated directory search.
+     *
+     *     Admins receive `PersonDetail`. Employees receive `PersonSummary` (masked
+     *     identifier, no contact fields) until a person participates in a case
+     *     assigned to them — which cannot happen until Phase 5.
+     */
+    get: operations['list_people_api_v1_people_get'];
+    put?: never;
+    /**
+     * Create a person
+     * @description Create a person. The response is always detail — the caller authored it.
+     */
+    post: operations['create_person_api_v1_people_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/people/{person_id}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Read a person
+     * @description Detail when the access predicate holds; summary otherwise. Never 403.
+     */
+    get: operations['get_person_api_v1_people__person_id__get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /**
+     * Update a person
+     * @description Edit a person. Employees need an assigned-case participation (Phase 5).
+     */
+    patch: operations['update_person_api_v1_people__person_id__patch'];
+    trace?: never;
+  };
+  '/api/v1/people/{person_id}/archive': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Archive a person */
+    post: operations['archive_person_api_v1_people__person_id__archive_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/people/{person_id}/cases': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List a person's cases
+     * @description Cases this person participates in, within the caller's scope.
+     *
+     *     Always empty in Phase 4: `cases` does not exist. The person must still
+     *     exist, so a typo is a 404 rather than a silent empty page.
+     */
+    get: operations['list_person_cases_api_v1_people__person_id__cases_get'];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/v1/people/{person_id}/unarchive': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Unarchive a person */
+    post: operations['unarchive_person_api_v1_people__person_id__unarchive_post'];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/v1/readyz': {
     parameters: {
       query?: never;
@@ -344,7 +453,12 @@ export interface components {
       | 'USER_NOT_FOUND'
       | 'USER_EMAIL_CONFLICT'
       | 'USER_SELF_DEACTIVATION'
-      | 'USER_LAST_ADMIN';
+      | 'USER_LAST_ADMIN'
+      | 'PERSON_NOT_FOUND'
+      | 'PERSON_ACCESS_DENIED'
+      | 'PERSON_IDENTIFIER_CONFLICT'
+      | 'PERSON_ALREADY_ARCHIVED'
+      | 'PERSON_NOT_ARCHIVED';
     /**
      * ErrorDetailModel
      * @description One field-level problem.
@@ -406,6 +520,40 @@ export interface components {
       /** Password */
       password: string;
     };
+    /** PaginatedResponse[PersonCaseItem] */
+    PaginatedResponse_PersonCaseItem_: {
+      /** Items */
+      items: components['schemas']['PersonCaseItem'][];
+      /**
+       * Page
+       * @description 1-based page number.
+       */
+      page: number;
+      /** Page Size */
+      page_size: number;
+      /**
+       * Total
+       * @description Rows matching the filters, ignoring pagination.
+       */
+      total: number;
+    };
+    /** PaginatedResponse[PersonReadResponse] */
+    PaginatedResponse_PersonReadResponse_: {
+      /** Items */
+      items: components['schemas']['PersonReadResponse'][];
+      /**
+       * Page
+       * @description 1-based page number.
+       */
+      page: number;
+      /** Page Size */
+      page_size: number;
+      /**
+       * Total
+       * @description Rows matching the filters, ignoring pagination.
+       */
+      total: number;
+    };
     /** PaginatedResponse[UserResponse] */
     PaginatedResponse_UserResponse_: {
       /** Items */
@@ -436,6 +584,173 @@ export interface components {
       current_password: string;
       /** New Password */
       new_password: string;
+    };
+    /**
+     * PersonCaseItem
+     * @description A case this person participates in.
+     *
+     *     Cases do not exist yet. This endpoint always returns an empty page in
+     *     Phase 4; the item schema arrives with Phase 5.
+     */
+    PersonCaseItem: Record<string, never>;
+    /**
+     * PersonCreateRequest
+     * @description Body for `POST /api/v1/people`.
+     *
+     *     `id_type` and `id_number` are both required together, or both omitted.
+     *     Israeli IDs are validated (format + check digit) when the type is
+     *     `ISRAELI_ID` (Q7 / ADR-0040).
+     */
+    PersonCreateRequest: {
+      /** Address */
+      address?: string | null;
+      /** Email */
+      email?: string | null;
+      /** First Name */
+      first_name: string;
+      /** Id Number */
+      id_number?: string | null;
+      id_type?: components['schemas']['PersonIdType'] | null;
+      /** Last Name */
+      last_name: string;
+      /** License Number */
+      license_number?: string | null;
+      /** Notes */
+      notes?: string | null;
+      /** Organization Name */
+      organization_name?: string | null;
+      /** Phone */
+      phone?: string | null;
+      /** Workplace */
+      workplace?: string | null;
+    };
+    /**
+     * PersonDetailResponse
+     * @description Full operational record. Never serialised without the access predicate.
+     *
+     *     Create is the documented exception: the caller already authored these values.
+     */
+    PersonDetailResponse: {
+      /** Address */
+      address: string | null;
+      /** Archived At */
+      archived_at: string | null;
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /**
+       * Created By
+       * Format: uuid
+       */
+      created_by: string;
+      /** Email */
+      email: string | null;
+      /** First Name */
+      first_name: string;
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Id Number */
+      id_number: string | null;
+      id_type: components['schemas']['PersonIdType'] | null;
+      /** Last Name */
+      last_name: string;
+      /** License Number */
+      license_number: string | null;
+      /** Notes */
+      notes: string | null;
+      /** Organization Name */
+      organization_name: string | null;
+      /** Phone */
+      phone: string | null;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      representation: 'DETAIL';
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+      /** Workplace */
+      workplace: string | null;
+    };
+    /**
+     * PersonIdType
+     * @description How a person's official identifier is classified (Q7 / ADR-0040).
+     *
+     *     Organizations are not people: `COMPANY_NUMBER` is deliberately absent.
+     *     A person may have no identifier at all — both `id_type` and `id_number`
+     *     are then NULL together.
+     * @enum {string}
+     */
+    PersonIdType: 'ISRAELI_ID' | 'PASSPORT' | 'FOREIGN_ID';
+    PersonReadResponse:
+      | components['schemas']['PersonSummaryResponse']
+      | components['schemas']['PersonDetailResponse'];
+    /**
+     * PersonSummaryResponse
+     * @description Masked directory row. The fields an employee may see outside their cases.
+     */
+    PersonSummaryResponse: {
+      /** Archived At */
+      archived_at: string | null;
+      /** First Name */
+      first_name: string;
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /**
+       * Id Number Masked
+       * @description Identifier with all but the last three characters replaced by *.
+       */
+      id_number_masked: string | null;
+      /** Last Name */
+      last_name: string;
+      /** Organization Name */
+      organization_name: string | null;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      representation: 'SUMMARY';
+    };
+    /**
+     * PersonUpdateRequest
+     * @description Body for `PATCH /api/v1/people/{person_id}`.
+     *
+     *     An explicit allowlist. Omitted fields are left alone. Sending `id_type`
+     *     requires `id_number` (and vice versa); both null clears the identifier.
+     */
+    PersonUpdateRequest: {
+      /** Address */
+      address?: string | null;
+      /** Email */
+      email?: string | null;
+      /** First Name */
+      first_name?: string | null;
+      /** Id Number */
+      id_number?: string | null;
+      id_type?: components['schemas']['PersonIdType'] | null;
+      /** Last Name */
+      last_name?: string | null;
+      /** License Number */
+      license_number?: string | null;
+      /** Notes */
+      notes?: string | null;
+      /** Organization Name */
+      organization_name?: string | null;
+      /** Phone */
+      phone?: string | null;
+      /** Workplace */
+      workplace?: string | null;
     };
     /**
      * ProvisionedUserResponse
@@ -582,9 +897,20 @@ export type SchemaErrorEnvelope = components['schemas']['ErrorEnvelope'];
 export type SchemaHealthResponse = components['schemas']['HealthResponse'];
 export type SchemaHttpValidationError = components['schemas']['HTTPValidationError'];
 export type SchemaLoginRequest = components['schemas']['LoginRequest'];
+export type SchemaPaginatedResponsePersonCaseItem =
+  components['schemas']['PaginatedResponse_PersonCaseItem_'];
+export type SchemaPaginatedResponsePersonReadResponse =
+  components['schemas']['PaginatedResponse_PersonReadResponse_'];
 export type SchemaPaginatedResponseUserResponse =
   components['schemas']['PaginatedResponse_UserResponse_'];
 export type SchemaPasswordChangeRequest = components['schemas']['PasswordChangeRequest'];
+export type SchemaPersonCaseItem = components['schemas']['PersonCaseItem'];
+export type SchemaPersonCreateRequest = components['schemas']['PersonCreateRequest'];
+export type SchemaPersonDetailResponse = components['schemas']['PersonDetailResponse'];
+export type SchemaPersonIdType = components['schemas']['PersonIdType'];
+export type SchemaPersonReadResponse = components['schemas']['PersonReadResponse'];
+export type SchemaPersonSummaryResponse = components['schemas']['PersonSummaryResponse'];
+export type SchemaPersonUpdateRequest = components['schemas']['PersonUpdateRequest'];
 export type SchemaProvisionedUserResponse = components['schemas']['ProvisionedUserResponse'];
 export type SchemaReadinessResponse = components['schemas']['ReadinessResponse'];
 export type SchemaUserCreateRequest = components['schemas']['UserCreateRequest'];
@@ -809,6 +1135,501 @@ export interface operations {
         };
         content: {
           'application/json': components['schemas']['HealthResponse'];
+        };
+      };
+      /** @description Unexpected server error. */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+    };
+  };
+  list_people_api_v1_people_get: {
+    parameters: {
+      query?: {
+        archived?: boolean | null;
+        page?: number;
+        page_size?: number;
+        query?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PaginatedResponse_PersonReadResponse_'];
+        };
+      };
+      /** @description No usable session. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description CSRF_TOKEN_INVALID or PASSWORD_CHANGE_REQUIRED. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+      /** @description Unexpected server error. */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+    };
+  };
+  create_person_api_v1_people_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PersonCreateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PersonDetailResponse'];
+        };
+      };
+      /** @description No usable session. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description CSRF_TOKEN_INVALID or PASSWORD_CHANGE_REQUIRED. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description PERSON_IDENTIFIER_CONFLICT. */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description VALIDATION_ERROR. */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description Unexpected server error. */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+    };
+  };
+  get_person_api_v1_people__person_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        person_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PersonReadResponse'];
+        };
+      };
+      /** @description No usable session. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description CSRF_TOKEN_INVALID or PASSWORD_CHANGE_REQUIRED. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description PERSON_NOT_FOUND. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+      /** @description Unexpected server error. */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+    };
+  };
+  update_person_api_v1_people__person_id__patch: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        person_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PersonUpdateRequest'];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PersonDetailResponse'];
+        };
+      };
+      /** @description No usable session. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description PERSON_ACCESS_DENIED, CSRF_TOKEN_INVALID or PASSWORD_CHANGE_REQUIRED. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description PERSON_NOT_FOUND. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description PERSON_IDENTIFIER_CONFLICT. */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+      /** @description Unexpected server error. */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+    };
+  };
+  archive_person_api_v1_people__person_id__archive_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        person_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description No usable session. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description FORBIDDEN — ADMIN only. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description PERSON_NOT_FOUND. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description PERSON_ALREADY_ARCHIVED. */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+      /** @description Unexpected server error. */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+    };
+  };
+  list_person_cases_api_v1_people__person_id__cases_get: {
+    parameters: {
+      query?: {
+        page?: number;
+        page_size?: number;
+      };
+      header?: never;
+      path: {
+        person_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['PaginatedResponse_PersonCaseItem_'];
+        };
+      };
+      /** @description No usable session. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description CSRF_TOKEN_INVALID or PASSWORD_CHANGE_REQUIRED. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description PERSON_NOT_FOUND. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
+        };
+      };
+      /** @description Unexpected server error. */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+    };
+  };
+  unarchive_person_api_v1_people__person_id__unarchive_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        person_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description No usable session. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description FORBIDDEN — ADMIN only. */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description PERSON_NOT_FOUND. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description PERSON_NOT_ARCHIVED. */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['ErrorEnvelope'];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          'application/json': components['schemas']['HTTPValidationError'];
         };
       };
       /** @description Unexpected server error. */

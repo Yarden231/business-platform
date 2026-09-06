@@ -1,19 +1,16 @@
 # Domain model
 
-> **Status:** Four tables exist. Revision `0001` created `users`, `user_identities`, `sessions` and
-> `activity_log` (§3, §7) and enabled `pg_trgm`; each is marked **IMPLEMENTED** below. Everything else
-> — `people`, `cases`, participants, assignments, status history, document requirements and
-> submissions, `case_number_sequences` — is **PLANNED**: the schema later phases will create through
-> Alembic. Items marked **(open)** depend on an answer in
+> **Status:** Five tables exist. Revision `0001` created `users`, `user_identities`, `sessions` and
+> `activity_log` (§3, §7) and enabled `pg_trgm`. Revision `0002` created `people` (§4). Each of those is
+> marked **IMPLEMENTED** below. Everything else — `cases`, participants, assignments, status history,
+> document requirements and submissions, `case_number_sequences` — is **PLANNED**: the schema later
+> phases will create through Alembic. Items marked **(open)** depend on an answer in
 > [`open-questions.md`](open-questions.md).
 >
-> After Phase 2 those four tables are **live**: the application writes `users` and `user_identities`
-> through admin provisioning and the bootstrap CLI, issues and revokes `sessions` on every login,
-> logout, password change, reset and deactivation, and records authentication and user-administration
-> events in `activity_log`. Phase 2 added **no new tables, columns, indexes or constraints** — the
-> Phase 1 schema already carried everything it needed, including the lockout counters on
-> `user_identities` and the CSRF hash on `sessions` — so there is no migration beyond `0001`, and the
-> model-versus-migration drift test confirms it.
+> After Phase 4 `people` is **live**: staff create, search, read, edit and archive reusable identity
+> records. Identifier modelling is **ADR-0040** (Q7). Case participation is still Phase 5, so the
+> employee half of invariant 14 cannot hold yet — `PersonAccessService.has_full_access` is `ADMIN` only
+> until those tables exist. The model-versus-migration drift test confirms `0002` matches the ORM.
 > Last reviewed: 2026-09-06
 
 ## 1. Overview
@@ -142,34 +139,37 @@ serves "revoke all sessions of a user"; `(expires_at)` serves the pruning job; a
 that would always hold the same value are two columns that can eventually disagree. `updated_at` is
 kept because rows are mutated (`last_seen_at`, `revoked_at`), which is the general rule in §2.
 
-## 4. People
+## 4. People — IMPLEMENTED
 
 ### `people`
 
-A real human or organisational contact: a party to a case, a lawyer, an accountant, a court contact.
+A reusable identity/contact record: a party to a case, a lawyer, an accountant, a court contact.
 A person exists **once** and is reused across cases — a lawyer appearing in thirty cases is one row.
 A lawyer is simply a person with `organization_name` / `license_number` populated; there is no
 separate lawyer table and no role stored on the person, because role is a property of participation.
+Organisations are not people: there is no `COMPANY_NUMBER` identifier (ADR-0040).
 
 | Column | Type | Null | Notes |
 | --- | --- | --- | --- |
 | `id` | UUID | no | PK |
-| `first_name` / `last_name` | TEXT | no | |
-| `id_number` | TEXT | yes | Israeli ID; unique when present **(open: Q7)** |
-| `email` | TEXT | yes | Not unique — spouses and family members legitimately share addresses |
-| `phone` | TEXT | yes | Stored as entered, normalised for search |
+| `first_name` / `last_name` | TEXT | no | Not blank |
+| `id_type` | TEXT | yes | `ISRAELI_ID` \| `PASSPORT` \| `FOREIGN_ID`; NULL iff `id_number` is NULL (ADR-0040) |
+| `id_number` | TEXT | yes | Stored form of the identifier; Israeli IDs are nine digits including the check digit |
+| `email` | TEXT | yes | Not unique — spouses and family members legitimately share addresses; stored lowercased |
+| `phone` | TEXT | yes | Stored as entered (trimmed) |
 | `address` | TEXT | yes | |
 | `workplace` | TEXT | yes | |
-| `organization_name` | TEXT | yes | Law firm / employer / municipality |
+| `organization_name` | TEXT | yes | Law firm / employer / municipality — a label, not a foreign key |
 | `license_number` | TEXT | yes | Bar or professional licence |
 | `notes` | TEXT | yes | |
-| `created_by` | UUID → `users.id` | no | |
+| `created_by` | UUID → `users.id` | no | `ON DELETE RESTRICT` |
 | `created_at` / `updated_at` | TIMESTAMPTZ | no | |
-| `archived_at` | TIMESTAMPTZ | yes | Hidden from pickers; historical references keep working |
+| `archived_at` | TIMESTAMPTZ | yes | Hidden from the default directory list; historical references keep working |
 
-Indexes: partial `UNIQUE (id_number) WHERE id_number IS NOT NULL`; `pg_trgm` GIN indexes on
-`first_name`, `last_name`, `organization_name`, `id_number` for substring search. Hebrew has no case
-distinction, so `ILIKE '%…%'` over trigram indexes is the right Release 1 search (ADR-0024).
+Indexes: `UNIQUE (id_type, id_number)` — several people may have no identifier, because PostgreSQL
+treats NULLs as distinct; `pg_trgm` GIN indexes on `first_name`, `last_name`, `organization_name`,
+`id_number` for substring search; btree on `archived_at`. Hebrew has no case distinction, so
+`ILIKE '%…%'` over trigram indexes is the right Release 1 search (ADR-0024).
 
 ## 5. Cases
 
@@ -583,7 +583,8 @@ Each of these has a named integration test; they are the contract of the domain 
 13. An `EMPLOYEE` cannot create a case and cannot manage assignments (403 for both).
 14. `PersonDetail` reads and `PATCH /people/{id}` are governed by one predicate: an `EMPLOYEE` holds both
     only while the person participates in a case currently assigned to them, and loses both when either
-    the participation or the assignment is removed.
+    the participation or the assignment is removed. Phase 4 covers the honest subset — `ADMIN` always,
+    `EMPLOYEE` never — because those tables do not exist yet. Phase 5 extends the employee branch.
 15. A `RESOURCE_BALANCING` case rejects out-of-graph transitions, except for an `ADMIN` supplying a
     reason; a case of any other type accepts the same transition. Both write status history and audit.
 16. Removing a participant or an assignment preserves the row with `removed_at` and `removed_by`,

@@ -3,7 +3,7 @@
 > **Status:** All records are `Accepted`. ADR-0001 to ADR-0029 were taken during Release 1 planning;
 > ADR-0030 onwards were taken during implementation and say which phase produced them. A decision that
 > turns out wrong is superseded by a new record rather than edited away.
-> Last reviewed: 2026-09-06
+> Last reviewed: 2026-09-06 (ADR-0040, Phase 4)
 
 Format: context → decision → consequences (including the cost we accept). Decisions the specification
 already fixed (Next.js, FastAPI, PostgreSQL, Azure, Hebrew RTL, monorepo) are not re-litigated here;
@@ -703,3 +703,27 @@ the OpenAPI document; `openapi-typescript` generates a closed union; the catalog
 **Consequences.** Adding a code without a Hebrew string is a frontend compile error, which is the
 check ADR-0014 asked for. Cost: a one-line type change on the envelope, and a generation step after
 any new `ErrorCode` member.
+
+---
+
+## ADR-0040 — Typed person identifiers, no company numbers on `people` (Phase 4 / Q7)
+
+**Context.** The specification stored a single nullable `id_number` and treated it as an Israeli ID.
+The firm also records passport holders and foreign nationals, and a person is often created before any
+identifier is known. Putting companies on the same row (a `COMPANY_NUMBER` type) would have mixed two
+kinds of entity and forced every later organisation feature through a person-shaped hole.
+
+**Decision.** `people` carries a typed pair, `id_type` + `id_number`, with three values only:
+`ISRAELI_ID`, `PASSPORT`, `FOREIGN_ID`. There is no `COMPANY_NUMBER`; organisations are not people and
+will be modelled separately if they become first-class. The pair is both-present or both-absent
+(database check + application parse). A person may have no identifier. Uniqueness is
+`UNIQUE (id_type, id_number)` — the same number under two types is two facts, not a collision.
+`ISRAELI_ID` is validated (nine digits and the Luhn-like check digit) when present; passports and
+foreign identifiers are trimmed and length-bounded only. Audit records that an identifier changed, never
+the number itself.
+
+**Consequences.** Foreign parties and “ID unknown yet” rows are honest from day one, and a later
+organisation table does not have to migrate company numbers off `people`. Cost: two columns instead of
+one, a checksum in `domain` that the form mirrors, and uniqueness that is composite rather than a
+partial unique on the number alone. Changing the type set is a check-constraint migration plus an enum
+member.

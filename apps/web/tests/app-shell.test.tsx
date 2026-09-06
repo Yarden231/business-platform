@@ -26,6 +26,10 @@ describe('AppShell', () => {
       'href',
       '/',
     );
+    expect(screen.getByRole('link', { name: t('shell.navigation.people') })).toHaveAttribute(
+      'href',
+      '/people',
+    );
     expect(screen.getByRole('main', { name: t('shell.mainLabel') })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: t('shell.userMenuLabel') })).toBeInTheDocument();
   });

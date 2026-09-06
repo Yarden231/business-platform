@@ -1,6 +1,6 @@
 # Specification review: contradictions, gaps and decisions needing a human
 
-> **Status:** Open, with seven items decided. Produced during Release 1 architecture planning from a close
+> **Status:** Open, with eight items decided. Produced during Release 1 architecture planning from a close
 > reading of the specification. Section 2 items each carry a **recommended default** so implementation is
 > never blocked for lack of an answer, but items marked **blocking** should be answered before the phase
 > that needs them, because they affect data modelling that is expensive to reverse.
@@ -8,12 +8,12 @@
 > **Decided:** Q1 archival orthogonal to status (ADR-0025) · Q2 admin-issued temporary passwords
 > (ADR-0026) · Q3 enforcement *model* — workflow policy per `case_type` (ADR-0009) · Q4 person access,
 > person edits and `ADMIN`-only case creation (ADR-0027, ADR-0028) · Q6 soft removal of participants and
-> assignments (ADR-0029) · Q8 Excel import is Phase 8, with the legacy-numbering premise corrected ·
-> Q12 GitHub + GitHub Actions.
+> assignments (ADR-0029) · Q7 typed person identifiers (ADR-0040) · Q8 Excel import is Phase 8, with the
+> legacy-numbering premise corrected · Q12 GitHub + GitHub Actions.
 >
-> **Still open, in phase order:** Q7 (Phase 4) · Q3's graph *content* (Phase 5, does not block the design)
-> · Q5 and Q9 (Phase 6) · Q8's mapping and scope, pending a real Excel export (Phase 8). Q10 and Q11 are
-> needed before production, not before code.
+> **Still open, in phase order:** Q3's graph *content* (Phase 5, does not block the design) · Q5 and Q9
+> (Phase 6) · Q8's mapping and scope, pending a real Excel export (Phase 8). Q10 and Q11 are needed
+> before production, not before code.
 >
 > Phase 1 note: the provisional answers to Q9c (25 MiB) and Q10 (8 hours idle, 12 hours absolute) are
 > now `Settings` defaults — `MAX_UPLOAD_SIZE_BYTES`, `SESSION_IDLE_TIMEOUT_SECONDS`,
@@ -25,7 +25,11 @@
 > a release. Uploads (Q9c) remain unenforced until Phase 6.
 >
 > Phase 3 note: the browser now logs in, rotates a temporary password and logs out through the
-> same-origin proxy. No new open questions; Q7 remains the next blocking item (Phase 4).
+> same-origin proxy.
+>
+> Phase 4 note: **Q7 is decided** (ADR-0040). The next modelling question that can block a phase is
+> Q5 / Q9 (documents, Phase 6). Phase 5 can start; it only needs Q3's graph *content*, which does not
+> block the design.
 > Last reviewed: 2026-09-06
 
 ---
@@ -265,15 +269,17 @@ assignment set that determines visibility. Recorded as **ADR-0028**.
 assignment stay queryable (`include_removed=true`). Active-row uniqueness is expressed as partial
 indexes, so a person or employee can be removed and later re-added. Recorded as **ADR-0029**.
 
-### Q7 — `id_number`: validation, uniqueness, and non-Israeli identifiers (**blocking, Phase 4**)
+### Q7 — `id_number`: validation, uniqueness, and non-Israeli identifiers (**Decided, Phase 4**)
 
-- **Recommended:** when provided, validate as an Israeli ID (9 digits + check digit) and enforce global
-  uniqueness among non-null values; keep the field nullable so a person can be created before their ID is
-  known.
-- Needs confirmation: do you handle parties without an Israeli ID (foreign nationals, passport holders,
-  corporate entities)? If yes, the clean answer is an `id_type` column (`ISRAELI_ID`, `PASSPORT`,
-  `COMPANY_NUMBER`) added now rather than retrofitted, because validation and uniqueness rules differ per
-  type. Retrofitting is possible but touches existing rows.
+**Decided:** a typed identifier pair on `people`, not a single Israeli-ID column. Recorded as
+**ADR-0040**.
+
+- `id_type` is one of `ISRAELI_ID`, `PASSPORT`, `FOREIGN_ID`. There is no `COMPANY_NUMBER`; organisations
+  are not people and will be modelled separately if they become first-class.
+- Uniqueness is `UNIQUE (id_type, id_number)`. The same number under two types is allowed.
+- Both columns are present together, or both are NULL. A person may have no identifier.
+- `ISRAELI_ID` is validated (nine digits + check digit) when present. Passports and foreign identifiers
+  are trimmed and length-bounded only.
 
 ### Q8 — Legacy data import (**partly decided; specifics open, Phase 8**)
 

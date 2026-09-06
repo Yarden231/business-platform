@@ -40,3 +40,23 @@ export type ErrorEnvelope = Schemas['ErrorEnvelope'];
  */
 export type PasswordIssue =
   'too_short' | 'too_long' | 'common' | 'whitespace_only' | 'same_as_current';
+
+export type PersonIdType = Schemas['PersonIdType'];
+
+export type PersonSummary = Schemas['PersonSummaryResponse'];
+
+export type PersonDetail = Schemas['PersonDetailResponse'];
+
+export type PersonRead = PersonSummary | PersonDetail;
+
+export type PersonCreateBody = Schemas['PersonCreateRequest'];
+
+export type PersonUpdateBody = Schemas['PersonUpdateRequest'];
+
+export type PersonList = Schemas['PaginatedResponse_PersonReadResponse_'];
+
+export type PersonCasesList = Schemas['PaginatedResponse_PersonCaseItem_'];
+
+export function isPersonDetail(person: PersonRead): person is PersonDetail {
+  return person.representation === 'DETAIL';
+}

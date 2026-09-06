@@ -29,9 +29,15 @@ export function AppShell({ user, children }: AppShellProps): React.JSX.Element {
           <UserMenu user={user} />
         </div>
         <Separator />
-        <nav aria-label={t('shell.navigationLabel')} className="mx-auto w-full max-w-5xl px-4 py-2">
+        <nav
+          aria-label={t('shell.navigationLabel')}
+          className="mx-auto flex w-full max-w-5xl gap-4 px-4 py-2"
+        >
           <Link href="/" className="text-sm font-medium underline-offset-4 hover:underline">
             {t('shell.navigation.home')}
+          </Link>
+          <Link href="/people" className="text-sm font-medium underline-offset-4 hover:underline">
+            {t('shell.navigation.people')}
           </Link>
         </nav>
       </header>
