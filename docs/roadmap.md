@@ -1,8 +1,8 @@
 # Implementation roadmap
 
-> **Status:** Phases 0 and 1 complete. Phases 2–10 are planned. This document is the agreed sequencing
-> for Release 1; each phase updates it with actual status on completion.
-> Last reviewed: 2026-09-02
+> **Status:** Phases 0, 1 and 2 complete. Phases 3–10 are planned. This document is the agreed
+> sequencing for Release 1; each phase updates it with actual status on completion.
+> Last reviewed: 2026-09-06
 
 ## How phases are sequenced
 
@@ -98,11 +98,11 @@ What landed, precisely:
   factory layer built before there is anything to vary would be guessed API rather than extracted
   API. Phase 4 introduces them with `people`, the first entity with enough optional fields to warrant
   one.
-- **No authentication.** `users`, `user_identities` and `sessions` are persistence only: nothing reads
-  or writes them, there is no hashing, no cookie, no login endpoint and no bootstrap admin. That is
-  Phase 2.
+- **No authentication.** `users`, `user_identities` and `sessions` were persistence only: nothing read
+  or wrote them, and there was no hashing, no cookie, no login endpoint and no bootstrap admin. Phase
+  2 supplied all of it.
 
-## Phase 2 — Identity and authorization
+## Phase 2 — Identity and authorization — **COMPLETE**
 
 **Goal:** real authentication and the authorization primitives, fully tested.
 
@@ -114,11 +114,28 @@ What landed, precisely:
   endpoint; own-password change.
 - Temporary-password issuance shown once at user creation, `must_change_password` gating every other
   endpoint until rotation, and admin re-issue for lockouts (ADR-0026).
-- Admin bootstrap: `scripts/create_admin.py` (interactive/env-driven, never a hardcoded credential).
+- Admin bootstrap: `scripts/create-admin` (interactive/env-driven, never a hardcoded credential).
 
-**Exit criteria:** tests for unauthenticated rejection, wrong password, lockout, CSRF rejection,
-session revocation on logout, employee blocked from user management, and no user enumeration through
-response differences.
+**Exit criteria — met.** 362 tests were added (483 in the API suite, from 121), covering
+unauthenticated rejection, wrong password, lockout, CSRF rejection, session revocation on logout,
+employee blocked from user management, and no user enumeration through response differences — plus
+the six end-to-end flows in `tests/integration/test_auth_flows.py`.
+
+**Delivered as designed, with these notes:**
+
+- **No migration.** The Phase 1 schema already carried the lockout counters, the CSRF hash and
+  everything else this phase needed, so `0001` is still the head. A test asserts the models and the
+  migration have not drifted.
+- Per-IP throttling counts `USER_LOGIN_FAILED` rows in `activity_log` rather than introducing a table
+  or Redis; its proxy-related limitation is documented in [`security.md`](security.md) §2.
+- Q10 (session lifetimes) is now implemented from configuration at the proposed 8h idle / 12h
+  absolute, so it is no longer an open question.
+- Two fixes to Phase 1 code were needed and made: `UUIDPrimaryKeyMixin` now assigns the primary key at
+  construction rather than at flush, which is what lets a service build a user, its identity and its
+  audit row in one graph; and the shared test client can be built over `https`, without which
+  production cookie behaviour could not be exercised at all.
+- **No login UI**, by design: the browser screens are Phase 3, and this phase changed nothing in
+  `apps/web`.
 
 ## Phase 3 — Web shell and authentication UI
 

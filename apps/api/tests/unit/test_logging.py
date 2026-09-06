@@ -6,43 +6,20 @@ request id that the caller was given, and never carries a credential.
 
 from __future__ import annotations
 
-import io
 import json
-import logging
-from collections.abc import Callable
-from typing import Any
 
 import pytest
 
-from app.core.logging import configure_logging, get_logger
-from app.core.settings import get_settings
+from app.core.logging import get_logger
 from app.main import create_app
 from tests.conftest import build_client
-
-#: Reads back everything the pipeline has emitted so far in this test.
-type LogReader = Callable[[], list[dict[str, Any]]]
+from tests.support.logs import LogReader, capture_json_logs
 
 
 @pytest.fixture
 def json_logs(monkeypatch: pytest.MonkeyPatch) -> LogReader:
-    """Configure the real JSON pipeline and hand back a reader for what it emitted.
-
-    The installed handler is pointed at memory instead of standard error.
-    Reconfiguring keeps the same handler, so a `create_app()` inside a test
-    writes here too.
-    """
-    monkeypatch.setenv("LOG_FORMAT", "json")
-    get_settings.cache_clear()
-    configure_logging(get_settings())
-
-    buffer = io.StringIO()
-    handler = next(h for h in logging.getLogger().handlers if type(h) is logging.StreamHandler)
-    handler.setStream(buffer)
-
-    def emitted() -> list[dict[str, Any]]:
-        return [json.loads(line) for line in buffer.getvalue().splitlines() if line.startswith("{")]
-
-    return emitted
+    """Configure the real JSON pipeline and hand back a reader for what it emitted."""
+    return capture_json_logs(monkeypatch)
 
 
 def test_a_log_line_is_json_with_the_expected_fields(json_logs: LogReader) -> None:

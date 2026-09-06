@@ -4,19 +4,29 @@ Internal case management platform for **כהן איזונים פיננסיים**
 financial/actuarial consultancy. The platform replaces the current Excel + Outlook + shared-folder
 workflow with a single system of record for cases, people, deadlines, documents and activity history.
 
-> **Project status: Phase 1 complete — backend platform.**
-> On top of the Phase 0 stack (PostgreSQL, Azurite, FastAPI, Next.js, the Hebrew RTL shell page, the
-> same-origin `/api/v1/*` proxy and every quality gate), the API now has typed settings, async
-> SQLAlchemy, Alembic migrations, the four infrastructure tables (`users`, `user_identities`,
-> `sessions`, `activity_log`), a database-enforced append-only audit log, structured logging with
-> request IDs, the error envelope, `/readyz`, and integration tests against real PostgreSQL.
-> **No product or domain feature exists yet** — there is no authentication behaviour, no people, no
-> cases and no documents. The four tables above are persistence foundations that Phase 2 starts using.
+> **Project status: Phase 2 complete — authentication, sessions and internal user administration.**
+> Phase 0 built the stack (PostgreSQL, Azurite, FastAPI, Next.js, the Hebrew RTL shell page, the
+> same-origin `/api/v1/*` proxy and every quality gate). Phase 1 built the backend platform (typed
+> settings, async SQLAlchemy, Alembic, the four infrastructure tables, a database-enforced append-only
+> audit log, structured logging with request IDs, the error envelope, `/readyz`, integration tests
+> against real PostgreSQL).
+>
+> Phase 2 makes those tables live. Working today, over the API: Argon2id password hashing behind an
+> `AuthenticationProvider` boundary; opaque server-side sessions in HttpOnly cookies with
+> session-bound CSRF tokens, idle and absolute expiry and immediate revocation; per-identity lockout
+> and per-IP login throttling with a single uniform login failure; `ADMIN`/`EMPLOYEE` role gates;
+> admin-provisioned staff accounts with a one-time temporary password and forced rotation;
+> deactivation and reactivation; the staff directory; and audited authentication and
+> user-administration events. A first administrator is created with `./scripts/create-admin`.
+>
+> **There is no login UI yet** — Phase 2 is API behaviour, and the browser screens are Phase 3. Also
+> still absent: people, cases, documents and the dashboard.
+>
 > Documents marked _Planned_ describe the target design that later phases will implement; they are
 > updated at the end of each phase so they always describe what is actually in the repository. See
 > [`docs/roadmap.md`](docs/roadmap.md).
 >
-> Last reviewed: 2026-09-02
+> Last reviewed: 2026-09-06
 
 ## What Release 1 delivers
 
@@ -79,7 +89,7 @@ Rationale for each choice is recorded in [`docs/decisions.md`](docs/decisions.md
       tests/             Vitest + React Testing Library suite
   docs/                  Architecture and process documentation
   infra/docker/          Dockerfiles for the local api and web images
-  scripts/               install, dev, check, test, migrate
+  scripts/               install, dev, check, test, migrate, create-admin
   .github/workflows/     GitHub Actions CI
   docker-compose.yml     Local stack: db, azurite, api, web
   .env.example           Documented environment variables, no real secrets
@@ -122,7 +132,7 @@ branch switch that adds a migration — comes up with a schema that matches the 
 not work this way; see [Database and migrations](#database-and-migrations).
 
 The browser only ever talks to the web origin: Next.js rewrites `/api/v1/*` to the API service so the
-session cookie added in Phase 2 stays first-party (ADR-0005). Port 8000 is published for diagnostics,
+session cookie stays first-party (ADR-0005). Port 8000 is published for diagnostics,
 not for the application to use.
 
 Two environment problems account for almost every failed first run:
@@ -162,6 +172,40 @@ Both servers reload on save, and the URLs are the same as above. `next dev` read
 `apps/web/` rather than the repository root, so `API_INTERNAL_URL` stays unset and the rewrite falls
 back to `http://localhost:8000` — where uvicorn is listening. Stop each server with `Ctrl+C`.
 
+### Create the first administrator
+
+The database ships with no accounts, and nothing seeds a default one — a known credential in a
+repository is a vulnerability, not a convenience. Create the first `ADMIN` yourself, once, against a
+migrated database:
+
+```bash
+./scripts/create-admin
+```
+
+It prompts for an email address, a full name and a password (twice, never echoed), applies the
+password policy, stores an Argon2id hash and records a `USER_CREATED` audit event. For a scripted
+environment, set `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_FULL_NAME` and `BOOTSTRAP_ADMIN_PASSWORD`
+instead and it runs without prompting.
+
+It only ever creates the *first* administrator: run it again and it reports the existing account and
+changes nothing, so it is safe in a startup script and cannot quietly overwrite a password. Every
+account after this one is created by that administrator through `POST /api/v1/users`. Use obviously
+fake credentials locally, and never commit them.
+
+There is no login page yet (Phase 3), so exercise the API directly:
+
+```bash
+curl -i -c jar.txt -X POST http://localhost:3000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@example.test","password":"…"}'
+
+curl -s -b jar.txt http://localhost:3000/api/v1/auth/me
+```
+
+Mutating requests additionally need the CSRF token: read `csrf_token` out of the cookie jar and send
+it as `X-CSRF-Token`. See [`docs/security.md`](docs/security.md) §3 and [`docs/api.md`](docs/api.md)
+§4.
+
 ### Stop, and reset
 
 ```bash
@@ -182,6 +226,7 @@ Install the toolchain once, then use the scripts. Every one of them exits non-ze
 ./scripts/test      # the API and web test suites only
 ./scripts/dev       # docker compose up --build
 ./scripts/migrate   # alembic upgrade head against DATABASE_URL
+./scripts/create-admin  # create the first ADMIN account (interactive or env-driven)
 ```
 
 `./scripts/check` runs, in order: Compose configuration validation, `ruff format --check`,

@@ -18,8 +18,12 @@
 > Phase 1 note: the provisional answers to Q9c (25 MiB) and Q10 (8 hours idle, 12 hours absolute) are
 > now `Settings` defaults — `MAX_UPLOAD_SIZE_BYTES`, `SESSION_IDLE_TIMEOUT_SECONDS`,
 > `SESSION_ABSOLUTE_TIMEOUT_SECONDS` — so answering either is an environment variable, not a code
-> change. Nothing enforces them yet: uploads are Phase 6 and sessions are Phase 2.
-> Last reviewed: 2026-09-02
+> change.
+>
+> Phase 2 note: **Q10 is now enforced from that configuration**, so it is answered in the only sense
+> that matters to the code — the numbers are a deployment decision the owner can still revise without
+> a release. Uploads (Q9c) remain unenforced until Phase 6.
+> Last reviewed: 2026-09-06
 
 ---
 
@@ -314,13 +318,21 @@ ordinary allocator, and `court_case_number` is imported wherever the export has 
   the Hebrew labels; you know the real document vocabulary and the list is much easier to get right now
   than after data exists.
 
-### Q10 — Session lifetime (**Phase 2**)
+### Q10 — Session lifetime (**Implemented from configuration in Phase 2**)
 
-- **Recommended:** 8 hours idle timeout, 12 hours absolute maximum, single active session per browser,
-  immediate revocation on logout and password change. That covers a working day without leaving a machine
-  logged in overnight.
-- Confirm whether staff work from shared or personal machines, and whether a shorter idle timeout (say 30
-  minutes) is acceptable given the sensitivity of the data.
+- **Implemented:** 8 hours idle timeout and 12 hours absolute maximum, from
+  `SESSION_IDLE_TIMEOUT_SECONDS` and `SESSION_ABSOLUTE_TIMEOUT_SECONDS`, with immediate revocation on
+  logout, password change, admin reset and deactivation. That covers a working day without leaving a
+  machine logged in overnight. Changing either number is an environment variable and a restart.
+- One deliberate departure from the recommendation: sessions are **per browser, not one per user**.
+  Logging in on a second machine does not end the first session, because silently logging somebody out
+  of their desktop when they open their laptop is a support call, not a security control — and the
+  controls that matter (revocation, idle expiry, the absolute cap) apply to each session
+  independently. A user who wants every session ended changes their password, which revokes all of
+  them.
+- **Still worth confirming with the owner:** whether staff work from shared or personal machines, and
+  whether a shorter idle timeout (say 30 minutes) is wanted given the sensitivity of the data. This is
+  now a configuration conversation rather than a code one.
 
 ### Q11 — Privacy, retention and data residency (**needed before production, not before code**)
 

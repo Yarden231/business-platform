@@ -1,18 +1,20 @@
 # Architecture
 
-> **Status:** Phases 0–1 implemented; the rest is the agreed target design.
+> **Status:** Phases 0–2 implemented; the rest is the agreed target design.
 >
-> **In the repository today:** the runtime topology and migration workflow of §3; the `main`, `api`,
-> `schemas`, `audit`, `models`, `db`, `domain` and `core` packages of §4 and the import contracts that
-> hold them apart; the middleware chain, error envelope and transaction boundary of §5; the audit
-> recorder and its append-only table in §7; the configuration, logging and health endpoints of §10;
-> the test-database harness of §11; and the quality gates of §12 including migration-drift detection.
+> **In the repository today:** the runtime topology and migration workflow of §3; **every package of
+> §4** — `main`, `api`, `schemas`, `services`, `repositories`, `auth`, `audit`, `models`, `db`,
+> `domain`, `core`, `cli` — and the import contracts that hold them apart; the middleware chain, error
+> envelope and transaction boundary of §5; the **authentication provider boundary, session management
+> and role gates of §6**; the audit recorder and its append-only table in §7, now carrying real
+> authentication events; the configuration, logging and health endpoints of §10; the test-database
+> harness of §11; and the quality gates of §12 including migration-drift detection.
 >
-> **Still design:** everything in §6 (authentication and authorization), §8 (document storage), the
-> service and repository layers, and the feature-facing parts of §7 (case workflow,
+> **Still design:** the object- and query-scoping halves of §6 (they need `people` and `cases` to scope
+> *to*), §8 (document storage), and the feature-facing parts of §7 (case workflow,
 > `last_activity_at`). This document is updated at the end of every implementation phase to match the
 > code.
-> Last reviewed: 2026-09-02
+> Last reviewed: 2026-09-06
 
 ## 1. Purpose and constraints
 
@@ -134,15 +136,16 @@ apps/api/
     main.py          FastAPI application, middleware, exception handlers, routers   [exists]
     api/             HTTP layer: routers, dependencies, request/response wiring only [exists]
     schemas/         Pydantic v2 request/response models (the public contract)      [exists]
-    services/        Use cases: transaction boundary, orchestration, audit + activity emission
-    repositories/    Query/persistence encapsulation, including actor-scoped queries
+    services/        Use cases: transaction boundary, orchestration, audit + activity emission [exists]
+    repositories/    Query/persistence encapsulation, including actor-scoped queries [exists]
     models/          SQLAlchemy ORM mappings                                        [exists]
     domain/          Pure logic: enums, status-transition graph, invariants, value objects [exists]
     db/              Engine, session factory, unit of work, base metadata           [exists]
-    auth/            Password hashing, session handling, identity providers, policies
+    auth/            Password hashing, session handling, identity providers, policies [exists]
     storage/         StorageService protocol + Azure Blob adapter + test fake
     audit/           Audit recorder and action catalogue                            [exists]
     core/            Settings, logging, errors, pagination, time, request context   [exists]
+    cli/             Operator commands that run outside the API (admin bootstrap)   [exists]
   migrations/        Alembic environment and revisions                              [exists]
   tests/             unit/ (no database), integration/ (real PostgreSQL), support/  [exists]
 ```
@@ -154,7 +157,8 @@ revision `0001` must keep running unchanged years after the model it created has
 
 Packages without `[exists]` are created by the phase that first needs them; an empty directory would
 be an architecture diagram pretending to be code. The layering contract already names them, so they
-are governed from the moment they appear.
+are governed from the moment they appear. Only `storage/` is still absent, and it arrives with
+document uploads in Phase 6.
 
 Dependency rules, verified in CI by `import-linter`:
 
@@ -172,7 +176,12 @@ obvious single contract would not have held:
 1. **A layers contract** orders `main → api → schemas → services → auth → audit/storage →
    repositories → models → db → domain → core`, with the not-yet-created layers marked optional.
 2. **`api` may not import `models`.** A layers contract only forbids the *upward* direction; reaching
-   past the service layer straight into the ORM is downward, and has to be forbidden by name.
+   past the service layer straight into the ORM is downward, and has to be forbidden by name. This one
+   checks *direct* imports only (`allow_indirect_imports`), because the rule being protected is "no
+   router may name an ORM class" — and any router that calls a service at all inevitably reaches
+   `app.models` transitively, since services are what talk to the ORM. Left strict, the contract would
+   have failed the moment the service layer existed, which would have meant deleting a real rule to
+   satisfy a tautology.
 3. **`domain` is pure** — no `sqlalchemy`, `fastapi`, `starlette` or `alembic`, so the transition
    graph and the Israeli ID checksum stay unit-testable without a database.
 4. **Only the HTTP layer imports the web framework.** `audit`, `core`, `db`, `domain`, `models` and
@@ -256,27 +265,57 @@ than silently overwriting a colleague's edit (ADR-0019).
 
 ## 6. Authentication and authorization architecture
 
-Authentication is split into three replaceable pieces so that adding Entra ID later is additive:
+Authentication is split into three replaceable pieces so that adding Entra ID later is additive. All
+three are implemented:
 
 1. **Identity storage** — `user_identities` rows link a `User` to `(provider, provider_subject)`.
    Release 1 creates `PASSWORD` identities holding an Argon2id hash. An Entra ID login later inserts a
    `MICROSOFT_ENTRA` identity for the same user with no schema change to `users`.
-2. **`AuthenticationProvider` protocol** — `authenticate(credentials) -> AuthenticatedIdentity`.
-   Release 1 ships `PasswordAuthenticationProvider`. An `EntraIdAuthenticationProvider` implements the
-   same protocol with an OIDC code flow.
-3. **Session issuance** — provider-independent. A successful authentication of any kind produces a
-   server-side session (§ `security.md`), so the session, CSRF, logout and revocation logic is written
-   once.
+2. **`AuthenticationProvider` protocol** (`auth/provider.py`) — one method,
+   `authenticate(credentials) -> AuthenticationResult`, generic over the credential type. Release 1
+   ships `PasswordAuthenticationProvider`. An `EntraIdAuthenticationProvider` implements the same
+   protocol with an OIDC code flow, and its `Credentials` type is an authorization code rather than an
+   email and password. There is deliberately no registry, no discovery and no plugin loader: two
+   providers do not need one.
 
-Authorization is a dedicated policy module (`auth/policies.py`) invoked from routers via dependencies
-and from services for defence in depth. Three mechanisms, used deliberately:
+   It returns a result rather than raising, and that is load-bearing. An authentication *failure* is a
+   state change — it increments `failed_attempt_count` and can set `locked_until`. A provider that
+   raised would unwind the service's `transaction()` block and take the lockout counter with it,
+   leaving unlimited password guesses. So the provider reports an outcome, the service commits the
+   counters and the audit row, and the uniform `401` is raised *after* the commit. The provider says
+   what happened in enough detail for the audit trail; assembling the single public failure is the
+   service's job.
+3. **Session issuance** (`auth/sessions.py`) — provider-independent, consuming an
+   `AuthenticatedIdentity` that carries no secret and no provider-specific detail. A successful
+   authentication of any kind produces a server-side session (see [`security.md`](security.md) §3), so
+   the session, CSRF, logout and revocation logic is written once and inherited by every provider that
+   follows.
 
-- **Role gates** — `require_role(Role.ADMIN)` for admin-only endpoints (user management, case creation,
-  assignment management, archiving, global audit).
+Two supporting modules exist for the same reason: `auth/hashing.py` owns Argon2id and the dummy-hash
+timing defence, and `auth/tokens.py` owns every random value in the authentication path — session
+tokens, CSRF tokens and temporary passwords — so "which of these is hashed, and how" is one file's
+answer rather than three call sites'.
+
+Authorization is a dedicated policy module (`auth/policies.py`) of pure functions over an
+`AuthenticatedActor`, invoked from routers via dependencies and from services for defence in depth.
+Three mechanisms, used deliberately:
+
+- **Role gates** — `ensure_role(actor, UserRole.ADMIN)` for admin-only endpoints (user management,
+  case creation, assignment management, archiving, global audit). **Implemented**, along with
+  `ensure_password_rotated`, the gate that keeps an account holding a temporary password confined to
+  the three endpoints it needs in order to escape that state.
 - **Object policies** — `ensure_can_view_case`, `ensure_can_edit_case`, `ensure_can_archive_case`,
   `ensure_can_review_document`, `ensure_can_view_person_detail`, `ensure_can_edit_person`. Pure
-  functions over `(actor, access_facts)`, where the facts are resolved once per request.
+  functions over `(actor, access_facts)`, where the facts are resolved once per request. **Not
+  written yet, on purpose:** an `ensure_can_view_case` authored before `cases` exists would be a
+  guess. They arrive with the phases that introduce those objects.
 - **Query scoping** — actor-scoped repository methods for every list/aggregate query (ADR-0013).
+  Arrives with the entities that need scoping.
+
+The actor itself is a frozen five-field dataclass — id, email, name, role, `must_change_password` —
+resolved from the session cookie by the `CurrentActor` dependency. Raw session ORM rows never leave
+`app.auth`, so no endpoint can accidentally serialise one, and no policy can come to depend on a
+field that is not part of the authenticated identity.
 
 Person access is resolved by a single predicate,
 `PersonAccessService.has_full_access(actor, person_id)` — true for any `ADMIN`, and for an `EMPLOYEE`

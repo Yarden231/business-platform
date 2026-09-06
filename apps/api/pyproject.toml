@@ -5,8 +5,14 @@ description = "Case management API for Cohen Financial Balancing"
 requires-python = ">=3.12,<3.14"
 dependencies = [
   "alembic>=1.16",
+  "argon2-cffi>=25.1",
   "asyncpg>=0.30",
   "fastapi>=0.121.0",
+  # `pydantic[email]` for `EmailStr`. A staff account's email is its login
+  # identifier and cannot be edited afterwards, so a typo is only fixable by
+  # deactivating the account and creating another one — worth validating at the
+  # boundary rather than discovering on somebody's first day.
+  "pydantic[email]>=2.11",
   "pydantic-settings>=2.10",
   "sqlalchemy[asyncio]>=2.0.44",
   "structlog>=25.4",
@@ -129,10 +135,10 @@ layers = [
   "app.main",
   "app.api",
   "app.schemas",
-  "(app.services)",
-  "(app.auth)",
+  "app.services",
+  "app.auth",
   "app.audit : (app.storage)",
-  "(app.repositories)",
+  "app.repositories",
   "app.models",
   "app.db",
   "app.domain",
@@ -144,10 +150,16 @@ layers = [
 # service layer, straight from a router into the ORM, is downward and has to be
 # forbidden explicitly. `app.api.dependencies` names one persistence type to
 # wire the request-scoped session, which is wiring, not a query.
+#
+# `allow_indirect_imports` restricts this to imports a router writes itself,
+# which is the rule architecture.md §4 states. Every service imports the models
+# by definition, so once `app.api` may call a service — Phase 2 — a transitive
+# reading of this contract would forbid the layering it exists to protect.
 name = "The HTTP layer never touches the ORM models"
 type = "forbidden"
 source_modules = ["app.api"]
 forbidden_modules = ["app.models"]
+allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
 name = "The domain layer is pure"
@@ -158,8 +170,19 @@ forbidden_modules = ["sqlalchemy", "fastapi", "starlette", "alembic"]
 [[tool.importlinter.contracts]]
 # Only `app.main` and `app.api` may know that this application speaks HTTP.
 # Everything below them has to be callable from a script, a scheduled job or a
-# test without a request in sight.
+# test without a request in sight — which is what lets `app.cli.create_admin`
+# reuse the same services the routers call.
 name = "Only the HTTP layer imports the web framework"
 type = "forbidden"
-source_modules = ["app.audit", "app.core", "app.db", "app.domain", "app.models", "app.schemas"]
+source_modules = [
+  "app.audit",
+  "app.auth",
+  "app.core",
+  "app.db",
+  "app.domain",
+  "app.models",
+  "app.repositories",
+  "app.schemas",
+  "app.services",
+]
 forbidden_modules = ["fastapi", "starlette"]

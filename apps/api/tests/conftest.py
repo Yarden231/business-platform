@@ -35,17 +35,23 @@ def app() -> FastAPI:
     return create_app()
 
 
-def build_client(app: FastAPI) -> AsyncClient:
+def build_client(app: FastAPI, *, tls: bool = False) -> AsyncClient:
     """An HTTP client wired straight into the ASGI app, with no network or server.
 
     `raise_app_exceptions=False` because the application turns every exception
     into a response: intercepting them here would make the 500 path untestable
     and would say nothing about what a real caller receives. A test that expects
     success asserts a 2xx, so an unexpected failure still fails the test.
+
+    `tls=True` gives an `https` base URL. Only the production-cookie tests need
+    it, and they need it for a real reason: a client keeps a `Secure` cookie
+    only if it arrived over `https`, so without this the browser-side half of
+    that behaviour could not be exercised at all.
     """
+    scheme = "https" if tls else "http"
     return AsyncClient(
         transport=ASGITransport(app=app, raise_app_exceptions=False),
-        base_url="http://testserver",
+        base_url=f"{scheme}://testserver",
     )
 
 

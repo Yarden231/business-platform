@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+#
+# Create the first administrator.
+#
+# Every other account is created by an admin through POST /api/v1/users. This
+# one cannot be, so it is created here by somebody with database access. There
+# is no default admin and no seeded credential anywhere in this repository
+# (docs/security.md §9).
+#
+# Interactive by default; the password is never echoed and is never taken from a
+# command-line flag, because a flag would put it in the shell history and in
+# `ps` output. For an unattended provisioning step, export instead:
+#
+#   BOOTSTRAP_ADMIN_EMAIL, BOOTSTRAP_ADMIN_FULL_NAME, BOOTSTRAP_ADMIN_PASSWORD
+#
+# Safe to re-run: it refuses to modify an account that already exists.
+
+set -euo pipefail
+# shellcheck source=scripts/_lib.sh
+source "$(dirname "$0")/_lib.sh"
+
+require_installed_dependencies
+load_env
+require_database
+
+section "Creating the initial administrator"
+cd "${REPO_ROOT}/apps/api"
+uv run python -m app.cli.create_admin

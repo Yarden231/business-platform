@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import DateTime, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -16,6 +17,21 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 class UUIDPrimaryKeyMixin:
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+
+    # `Any` because this forwards to SQLAlchemy's declarative constructor, whose
+    # keywords are the mapped columns of whichever model is being built.
+    def __init__(self, **kwargs: Any) -> None:  # noqa: ANN401
+        """Assign the identifier now rather than at flush time.
+
+        A column `default` fires during `INSERT`, which would leave `id` as
+        `None` on a newly constructed object — and the promise above is that a
+        service can wire up a whole object graph, foreign keys and audit rows
+        included, before anything is written. So the key is generated here, in
+        Python, and the column default remains as the backstop for a row built
+        some other way.
+        """
+        kwargs.setdefault("id", uuid.uuid4())
+        super().__init__(**kwargs)
 
 
 class TimestampMixin:

@@ -3,7 +3,7 @@
 > **Status:** All records are `Accepted`. ADR-0001 to ADR-0029 were taken during Release 1 planning;
 > ADR-0030 onwards were taken during implementation and say which phase produced them. A decision that
 > turns out wrong is superseded by a new record rather than edited away.
-> Last reviewed: 2026-09-02
+> Last reviewed: 2026-09-06
 
 Format: context → decision → consequences (including the cost we accept). Decisions the specification
 already fixed (Next.js, FastAPI, PostgreSQL, Azure, Hebrew RTL, monorepo) are not re-litigated here;
@@ -613,3 +613,76 @@ rather than taking containers down one at a time. The cost is a real constraint 
 written: during a rollout the old revision is still serving, so a migration has to be compatible with
 it — additive first, destructive changes in a later release. That constraint exists in any zero-downtime
 deployment and is better stated now than discovered in Phase 10.
+
+## ADR-0034 — Authentication providers return an outcome; they do not raise (Phase 2)
+
+**Context.** A failed login is not a read-only event: it increments `user_identities.failed_attempt_count`
+and, at the threshold, sets `locked_until`. Those writes are the brute-force control. The natural
+Python shape — raise `InvalidCredentialsError` from the provider — puts the exception inside the
+service's `transaction()` block, which rolls it back on the way out. The counter would never persist
+and an attacker would get unlimited guesses against a lockout that silently never engaged.
+
+**Decision.** `AuthenticationProvider.authenticate()` returns an `AuthenticationResult` carrying an
+outcome enum (`SUCCESS`, `UNKNOWN_IDENTITY`, `BAD_SECRET`, `LOCKED`, `INACTIVE`) plus a
+`lockout_applied` flag. The service commits the counters and the audit row, and *then* raises the
+single uniform `401` from outside the transaction. Nothing about the outcome reaches the client.
+
+**Consequences.** Failure bookkeeping is durable, which is the entire point of having it. The audit
+trail keeps the precise internal reason while the response stays uniform — one type carries both,
+rather than the public error being asked to describe something it must not. The cost is that a caller
+of a provider has to inspect a result instead of relying on an exception, so a future
+`EntraIdAuthenticationProvider` must follow the same convention; the protocol's return type makes that
+unmissable, and the service is the only caller.
+
+## ADR-0035 — Per-IP login throttling counts audit rows; no Redis in Release 1 (Phase 2)
+
+**Context.** Per-identity lockout stops an attacker grinding one account, but not one address probing
+many accounts. A throttle needs shared, durable state. A process-local dictionary is not it: two API
+replicas would each keep their own count and a restart would forget everything.
+
+**Decision.** Count `USER_LOGIN_FAILED` rows in `activity_log` for the request IP inside a
+configurable window (`LOGIN_IP_MAX_FAILED_ATTEMPTS`, `LOGIN_IP_WINDOW_SECONDS`) and return
+`429 TOO_MANY_REQUESTS` above the limit. The rows are already being written for audit reasons, and
+PostgreSQL is already a shared dependency.
+
+**Consequences.** The control is durable, shared across replicas and needs no new table, no new
+service and no new operational surface — a real consideration for a system with one small deployment
+target. Accepted costs, all documented in [`security.md`](security.md) §2: one indexed count query per
+login attempt, which is negligible at this scale but is not a free rate limiter; the window is
+approximate rather than a precise token bucket; and the IP is taken from the connection, so it only
+becomes trustworthy once a reverse proxy is in front of the API and configured to be believed (Phase
+10). Users behind one office NAT share a bucket, which is why the limit is set well above human
+retyping. If load ever makes the query the wrong shape, Redis or a proxy-level limiter replaces this
+module without touching the login flow.
+
+## ADR-0036 — A lockout is metadata on the failure event, not its own audit action (Phase 2)
+
+**Context.** "When was this account locked, and by what?" must be answerable from the audit trail. The
+obvious move is a `USER_LOCKED_OUT` action.
+
+**Decision.** No new action. The attempt that trips the lock records
+`USER_LOGIN_FAILED` with `lockout_applied: true` in its metadata.
+
+**Consequences.** The locking attempt and the lock are the same event, at the same instant, against the
+same entity; two rows would describe one thing and invite the two to disagree. The question stays a
+single indexed-JSONB predicate rather than a reconstruction from counting consecutive failures. The
+cost is that the fact lives in metadata rather than in the action vocabulary, so a future audit UI
+filtering by action alone will not surface it — acceptable, because an investigator looking at lockouts
+is already looking at login failures.
+
+## ADR-0037 — Sessions are per browser; a new login does not displace existing sessions (Phase 2)
+
+**Context.** [`open-questions.md`](open-questions.md) Q10 proposed "single active session per browser",
+which can be read as one session per *user*. Logging in would then end whatever session already
+existed.
+
+**Decision.** Each login issues an independent session. Signing in on a laptop leaves a desktop session
+working. Revocation stays targeted: logout ends the current session only, while a password change,
+an admin reset and deactivation each revoke *all* of the user's sessions.
+
+**Consequences.** No support calls from staff who use two machines and keep getting logged out of the
+first. The controls that actually matter are unaffected, because idle expiry, the absolute cap and
+revocation apply to every session independently, and the three events that mean "this account may be
+compromised" already clear the lot. A user who wants every other session ended changes their password.
+The cost is that a stolen laptop's session survives until it expires or somebody acts — which is true
+of any per-device scheme, and is what deactivation is for.

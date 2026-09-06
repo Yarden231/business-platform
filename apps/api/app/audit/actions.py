@@ -26,7 +26,20 @@ class AuditAction(StrEnum):
     USER_CREATED = "USER_CREATED"
     USER_UPDATED = "USER_UPDATED"
     USER_DEACTIVATED = "USER_DEACTIVATED"
+    #: Reactivation. Its own action rather than a `USER_UPDATED` with a
+    #: `changes` payload, because "who restored access, and when" is a question
+    #: an auditor asks directly and should not have to filter for.
+    USER_ACTIVATED = "USER_ACTIVATED"
+    #: The user rotated their own password.
     USER_PASSWORD_CHANGED = "USER_PASSWORD_CHANGED"  # noqa: S105 - an event name, not a secret
+    #: An admin issued a new temporary password for somebody else (ADR-0026).
+    #: Distinct from `USER_PASSWORD_CHANGED`: the actor is not the subject, and
+    #: it is an administrative intervention worth reading on its own.
+    USER_PASSWORD_RESET = "USER_PASSWORD_RESET"  # noqa: S105 - an event name, not a secret
+    #: An authenticated request failed the session-bound CSRF check
+    #: (docs/security.md §3). Recorded because it is either an attack or a bug,
+    #: and both are worth being able to see after the fact.
+    CSRF_VALIDATION_FAILED = "CSRF_VALIDATION_FAILED"
 
     # People (Phase 4)
     PERSON_CREATED = "PERSON_CREATED"

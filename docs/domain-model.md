@@ -7,9 +7,14 @@
 > Alembic. Items marked **(open)** depend on an answer in
 > [`open-questions.md`](open-questions.md).
 >
-> The tables that exist hold no behaviour yet. There is no authentication, no session issuance and no
-> user management; Phase 2 is where these rows start being written by the application.
-> Last reviewed: 2026-09-02
+> After Phase 2 those four tables are **live**: the application writes `users` and `user_identities`
+> through admin provisioning and the bootstrap CLI, issues and revokes `sessions` on every login,
+> logout, password change, reset and deactivation, and records authentication and user-administration
+> events in `activity_log`. Phase 2 added **no new tables, columns, indexes or constraints** — the
+> Phase 1 schema already carried everything it needed, including the lockout counters on
+> `user_identities` and the CSRF hash on `sessions` — so there is no migration beyond `0001`, and the
+> model-versus-migration drift test confirms it.
+> Last reviewed: 2026-09-06
 
 ## 1. Overview
 
@@ -487,7 +492,8 @@ actually caught — at import time, in every phase, rather than at 3 a.m. in pro
 ### Action catalogue
 
 `USER_LOGGED_IN`, `USER_LOGIN_FAILED`, `USER_LOGGED_OUT`, `USER_CREATED`, `USER_UPDATED`,
-`USER_DEACTIVATED`, `USER_PASSWORD_CHANGED`, `PERSON_CREATED`, `PERSON_UPDATED`, `PERSON_ARCHIVED`,
+`USER_DEACTIVATED`, `USER_ACTIVATED`, `USER_PASSWORD_CHANGED`, `USER_PASSWORD_RESET`,
+`CSRF_VALIDATION_FAILED`, `PERSON_CREATED`, `PERSON_UPDATED`, `PERSON_ARCHIVED`,
 `CASE_CREATED`, `CASE_UPDATED`, `CASE_STATUS_CHANGED`, `CASE_ASSIGNED`, `CASE_UNASSIGNED`,
 `CASE_PRIMARY_ASSIGNEE_CHANGED`, `PARTICIPANT_ADDED`, `PARTICIPANT_REMOVED`,
 `DOCUMENT_REQUIREMENT_CREATED`, `DOCUMENT_REQUIREMENT_UPDATED`, `DOCUMENT_REQUIREMENT_ARCHIVED`,
@@ -499,6 +505,29 @@ All of them exist as `AuditAction` members in `app/audit/actions.py`, alongside 
 `DOCUMENT_SUBMISSION`, `SESSION`). Declaring the full catalogue now rather than one verb per phase
 keeps the vocabulary a single reviewed list instead of an accumulation of ad-hoc strings; a unit test
 asserts the catalogue matches this section, so the two cannot drift.
+
+Three of those were added in Phase 2, and each earns its place by being a question an auditor asks
+directly rather than a variation on another action:
+
+- `USER_ACTIVATED` — reactivation. Not a `USER_UPDATED` with a `changes` payload, because "who
+  restored this person's access, and when" should not require filtering.
+- `USER_PASSWORD_RESET` — an admin issued a new temporary password for somebody else. Distinct from
+  `USER_PASSWORD_CHANGED`, where the actor *is* the subject: this is an administrative intervention
+  on another account.
+- `CSRF_VALIDATION_FAILED` — an authenticated request failed the session-bound CSRF check. Recorded
+  because it is either an attack or a client bug; its `entity_type` is `SESSION`, and neither the
+  submitted token nor the expected hash is in the row.
+
+Lockout deliberately did **not** get an action. The attempt that trips a lock and the failure that
+caused it are the same event, at the same instant, against the same entity, so it is one
+`USER_LOGIN_FAILED` row carrying `lockout_applied: true` in its metadata rather than two rows
+describing one thing.
+
+**What authentication events may carry.** Actor, target user where known, request id, IP and a
+truncated user agent, plus the internal outcome for a failure. Never: a plaintext password, a password
+hash, a raw or hashed session token, and no raw or hashed CSRF token. A login failure against an
+address that matches no account records **no address and no actor** — the audit trail must not become
+the account-enumeration oracle that the login endpoint refuses to be.
 
 ### `last_activity_at` semantics
 

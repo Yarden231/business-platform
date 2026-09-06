@@ -57,6 +57,24 @@ class TestDevelopmentDefaults:
         assert settings.argon2_memory_cost == 65536
         assert settings.argon2_time_cost == 3
         assert settings.argon2_parallelism == 4
+        # docs/security.md §3: one `last_seen_at` write per minute at most.
+        assert settings.session_last_seen_refresh_seconds == 60
+        # docs/security.md §2. The per-IP allowance is deliberately looser than
+        # the per-identity one: a shared office address is one IP for the firm.
+        assert settings.login_max_failed_attempts == 5
+        assert settings.login_lockout_seconds == 15 * 60
+        assert settings.login_ip_max_failed_attempts == 20
+        assert settings.login_ip_window_seconds == 15 * 60
+
+    def test_cookies_are_insecure_in_development_and_secure_in_production(self) -> None:
+        """`Secure` is relaxed for plain-HTTP local development only."""
+        assert Settings(database_url=DEVELOPMENT_DATABASE_URL).cookies_are_secure is False
+        assert production().cookies_are_secure is True
+
+    def test_a_developer_can_opt_into_secure_cookies(self) -> None:
+        settings = Settings(database_url=DEVELOPMENT_DATABASE_URL, session_cookie_secure=True)
+
+        assert settings.cookies_are_secure is True
 
 
 class TestValueValidation:
@@ -134,6 +152,14 @@ class TestProductionGuards:
     def test_sql_echoing_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="DB_ECHO must be disabled"):
             production(db_echo=True)
+
+    def test_insecure_session_cookies_are_refused(self) -> None:
+        """Production may not send the session cookie over plain HTTP."""
+        with pytest.raises(ValidationError, match="SESSION_COOKIE_SECURE must not be disabled"):
+            production(session_cookie_secure=False)
+
+    def test_leaving_cookie_security_to_follow_the_environment_is_fine(self) -> None:
+        assert production(session_cookie_secure=None).cookies_are_secure is True
 
     def test_cross_origin_browser_access_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="CORS_ALLOWED_ORIGINS must be empty"):

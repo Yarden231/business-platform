@@ -24,9 +24,33 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.core.settings import get_settings
 from app.db.session import get_db_session
 from tests.conftest import build_client
 from tests.support.database import ensure_database, integration_database_url, upgrade_to_head
+
+
+@pytest.fixture(autouse=True)
+def _fast_password_hashing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hash with the cheapest legal Argon2id parameters, for these tests only.
+
+    The production defaults are 64 MiB and three passes, which is exactly the
+    point of them: an attacker holding the hashes has to spend that per guess.
+    A suite that logs in several dozen times would spend seconds of every run
+    doing the same, buying no coverage — the code path is identical whatever the
+    numbers are.
+
+    So the cost is turned down here and the *wiring* is asserted separately:
+    `tests/unit/test_password_hashing.py` proves the hasher takes its
+    parameters from `Settings` and that the encoded hash records them, which is
+    the thing that would actually break if this were ever misconfigured. The
+    real defaults stay asserted in `tests/unit/test_settings.py`, which is why
+    this fixture lives here rather than in the root conftest.
+    """
+    monkeypatch.setenv("ARGON2_MEMORY_COST", "8192")
+    monkeypatch.setenv("ARGON2_TIME_COST", "1")
+    monkeypatch.setenv("ARGON2_PARALLELISM", "1")
+    get_settings.cache_clear()
 
 
 @pytest.fixture(scope="session")

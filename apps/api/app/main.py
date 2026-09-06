@@ -21,7 +21,9 @@ from app.api.middleware import (
     RequestContextMiddleware,
     SecurityHeadersMiddleware,
 )
+from app.api.routers.auth import router as auth_router
 from app.api.routers.operational import router as operational_router
+from app.api.routers.users import router as users_router
 from app.core.logging import configure_logging, get_logger
 from app.core.settings import Settings, get_settings
 from app.db.engine import dispose_engine
@@ -113,6 +115,12 @@ def create_app() -> FastAPI:
     #                                     same-origin proxy (ADR-0005).
     app.include_router(operational_router, include_in_schema=False)
     app.include_router(operational_router, prefix=API_V1_PREFIX)
+
+    # Everything else is versioned only. There is no unversioned alias for an
+    # application endpoint: the browser reaches all of these through the
+    # same-origin `/api/v1/*` proxy (ADR-0005).
+    app.include_router(auth_router, prefix=API_V1_PREFIX)
+    app.include_router(users_router, prefix=API_V1_PREFIX)
     return app
 
 

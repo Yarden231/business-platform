@@ -89,15 +89,35 @@ class Settings(BaseSettings):
     #: machine, JSON everywhere else.
     log_format: LogFormat | None = None
 
-    # -- Sessions (persistence lands in Phase 1, behaviour in Phase 2) ----
+    # -- Sessions ---------------------------------------------------------
     session_secret: SecretStr = SecretStr(DEVELOPMENT_SESSION_SECRET)
+    #: Answers to Q10, as configuration rather than literals in the code.
     session_idle_timeout_seconds: int = Field(default=8 * 60 * 60, ge=60)
     session_absolute_timeout_seconds: int = Field(default=12 * 60 * 60, ge=60)
+    #: How stale `sessions.last_seen_at` may get before a request refreshes it.
+    #: Without this the idle timeout would cost a write on every request
+    #: (docs/security.md §3).
+    session_last_seen_refresh_seconds: int = Field(default=60, ge=1)
+    #: `None` means "follow APP_ENV". Only a plain-HTTP developer machine has a
+    #: reason to turn this off, and production refuses to.
+    session_cookie_secure: bool | None = None
 
-    # -- Password hashing (used from Phase 2; validated here) -------------
+    # -- Password hashing --------------------------------------------------
     argon2_memory_cost: int = Field(default=65536, ge=8192)
     argon2_time_cost: int = Field(default=3, ge=1)
     argon2_parallelism: int = Field(default=4, ge=1)
+
+    # -- Brute-force protection (docs/security.md §2) ---------------------
+    #: Consecutive failures against one identity before it is locked. The
+    #: counter lives in `user_identities`, so the control survives a restart and
+    #: works across API instances without Redis.
+    login_max_failed_attempts: int = Field(default=5, ge=1)
+    login_lockout_seconds: int = Field(default=15 * 60, ge=1)
+    #: Per-IP throttling, counted from the `USER_LOGIN_FAILED` audit rows of the
+    #: trailing window. Higher than the per-identity threshold on purpose: a
+    #: shared office NAT address is one IP for the whole firm.
+    login_ip_max_failed_attempts: int = Field(default=20, ge=1)
+    login_ip_window_seconds: int = Field(default=15 * 60, ge=1)
 
     # -- Business configuration -------------------------------------------
     #: docs/domain-model.md §7. The number 14 appears exactly once in the
@@ -119,6 +139,13 @@ class Settings(BaseSettings):
         if self.api_docs_enabled is None:
             return not self.is_production
         return self.api_docs_enabled
+
+    @property
+    def cookies_are_secure(self) -> bool:
+        """Whether the session and CSRF cookies carry `Secure` (docs/security.md §3)."""
+        if self.session_cookie_secure is None:
+            return self.is_production
+        return self.session_cookie_secure
 
     @property
     def resolved_log_format(self) -> LogFormat:
@@ -204,6 +231,11 @@ class Settings(BaseSettings):
             problems.append("API_DOCS_ENABLED must be disabled (docs/security.md §8)")
         if self.db_echo:
             problems.append("DB_ECHO must be disabled; it writes SQL to the logs")
+        if self.session_cookie_secure is False:
+            problems.append(
+                "SESSION_COOKIE_SECURE must not be disabled; it would send the "
+                "session cookie over plain HTTP (docs/security.md §3)"
+            )
         if self.cors_allowed_origins:
             problems.append(
                 "CORS_ALLOWED_ORIGINS must be empty; the browser reaches the API "
