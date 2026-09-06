@@ -31,3 +31,16 @@ class IdentityProvider(StrEnum):
 
     PASSWORD = "PASSWORD"  # noqa: S105 - a provider name, not a secret
     MICROSOFT_ENTRA = "MICROSOFT_ENTRA"
+
+
+class PersonIdType(StrEnum):
+    """How a person's official identifier is classified (Q7 / ADR-0040).
+
+    Organizations are not people: `COMPANY_NUMBER` is deliberately absent.
+    A person may have no identifier at all — both `id_type` and `id_number`
+    are then NULL together.
+    """
+
+    ISRAELI_ID = "ISRAELI_ID"
+    PASSPORT = "PASSPORT"
+    FOREIGN_ID = "FOREIGN_ID"

@@ -26,7 +26,14 @@ from tests.support.database import (
     upgrade_to_head,
 )
 
-PHASE_1_TABLES = {"activity_log", "alembic_version", "sessions", "user_identities", "users"}
+PHASE_TABLES = {
+    "activity_log",
+    "alembic_version",
+    "people",
+    "sessions",
+    "user_identities",
+    "users",
+}
 
 
 @pytest.fixture
@@ -52,8 +59,8 @@ def test_upgrade_from_an_empty_database_builds_the_whole_schema(empty_database: 
 
     upgrade_to_head(empty_database)
 
-    assert table_names(empty_database) == PHASE_1_TABLES
-    assert fetch_scalars(empty_database, "SELECT version_num FROM alembic_version") == ["0001"]
+    assert table_names(empty_database) == PHASE_TABLES
+    assert fetch_scalars(empty_database, "SELECT version_num FROM alembic_version") == ["0002"]
 
 
 def test_downgrade_removes_everything_it_created(empty_database: str) -> None:
@@ -81,7 +88,7 @@ def test_the_schema_can_be_rebuilt_after_a_downgrade(empty_database: str) -> Non
     downgrade_to_base(empty_database)
     upgrade_to_head(empty_database)
 
-    assert table_names(empty_database) == PHASE_1_TABLES
+    assert table_names(empty_database) == PHASE_TABLES
 
 
 def test_the_models_and_the_migration_head_agree(empty_database: str) -> None:

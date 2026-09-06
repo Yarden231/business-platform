@@ -248,6 +248,11 @@ class TestTheOpenApiDocumentAgrees:
             "/api/v1/users/{user_id}",
             "/api/v1/users/{user_id}/password-reset",
             "/api/v1/users/directory",
+            "/api/v1/people",
+            "/api/v1/people/{person_id}",
+            "/api/v1/people/{person_id}/archive",
+            "/api/v1/people/{person_id}/unarchive",
+            "/api/v1/people/{person_id}/cases",
         } <= set(document["paths"])
 
     async def test_the_login_body_is_a_typed_schema(self, db_client: AsyncClient) -> None:

@@ -9,9 +9,9 @@ described in `docs/architecture.md` §6:
 * **query scoping** — actor-scoped repository methods, which arrive with the
   entities that need scoping.
 
-Object policies (`ensure_can_view_case`, `ensure_can_edit_person`, …) belong to
-the phases that introduce those objects. Nothing here anticipates them: an
-`ensure_can_view_case` written before `cases` exists would be a guess.
+Object policies for people (`ensure_can_edit_person`, `ensure_can_archive_person`)
+are here; they consume access facts resolved by `PersonAccessService`. Case
+policies (`ensure_can_view_case`, …) still belong to Phase 5.
 
 The `role` column becomes a `user_roles` table when client and lawyer portals
 arrive. Because every check in the application goes through this module, that
@@ -20,7 +20,7 @@ stays an additive migration plus one edit here.
 
 from __future__ import annotations
 
-from app.core.errors import ForbiddenError, PasswordChangeRequiredError
+from app.core.errors import ForbiddenError, PasswordChangeRequiredError, PersonAccessDeniedError
 from app.domain.actor import AuthenticatedActor
 from app.domain.enums import UserRole
 
@@ -53,3 +53,19 @@ def ensure_password_rotated(actor: AuthenticatedActor) -> None:
     """
     if actor.must_change_password:
         raise PasswordChangeRequiredError
+
+
+def ensure_can_edit_person(*, has_full_access: bool) -> None:
+    """Refuse a person write unless the access predicate holds (ADR-0027).
+
+    The facts are resolved by `PersonAccessService.has_full_access`. This
+    function only applies them, so a forgotten query cannot invent a grant
+    and a forgotten policy cannot invent a query.
+    """
+    if not has_full_access:
+        raise PersonAccessDeniedError
+
+
+def ensure_can_archive_person(actor: AuthenticatedActor) -> None:
+    """Archiving a person is `ADMIN`-only (docs/security.md §4)."""
+    ensure_role(actor, UserRole.ADMIN)

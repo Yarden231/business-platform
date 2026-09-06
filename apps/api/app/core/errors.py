@@ -68,6 +68,13 @@ class ErrorCode(StrEnum):
     USER_SELF_DEACTIVATION = "USER_SELF_DEACTIVATION"
     USER_LAST_ADMIN = "USER_LAST_ADMIN"
 
+    # People (Phase 4)
+    PERSON_NOT_FOUND = "PERSON_NOT_FOUND"
+    PERSON_ACCESS_DENIED = "PERSON_ACCESS_DENIED"
+    PERSON_IDENTIFIER_CONFLICT = "PERSON_IDENTIFIER_CONFLICT"
+    PERSON_ALREADY_ARCHIVED = "PERSON_ALREADY_ARCHIVED"
+    PERSON_NOT_ARCHIVED = "PERSON_NOT_ARCHIVED"
+
 
 @dataclass(frozen=True, slots=True)
 class ErrorDetail:
@@ -296,3 +303,39 @@ class LastAdminError(ConflictError):
 
     code = ErrorCode.USER_LAST_ADMIN
     message = "The last active administrator cannot be demoted or deactivated."
+
+
+# ---------------------------------------------------------------------------
+# People
+# ---------------------------------------------------------------------------
+
+
+class PersonNotFoundError(NotFoundError):
+    code = ErrorCode.PERSON_NOT_FOUND
+    message = "That person does not exist."
+
+
+class PersonAccessDeniedError(AppError):
+    """The caller can see that the person exists but may not edit them (ADR-0027).
+
+    Search already disclosed existence, so this is `403`, not `404`.
+    """
+
+    code = ErrorCode.PERSON_ACCESS_DENIED
+    status_code = 403
+    message = "You do not have access to edit this person."
+
+
+class PersonIdentifierConflictError(ConflictError):
+    code = ErrorCode.PERSON_IDENTIFIER_CONFLICT
+    message = "A person with that identifier already exists."
+
+
+class PersonAlreadyArchivedError(ConflictError):
+    code = ErrorCode.PERSON_ALREADY_ARCHIVED
+    message = "That person is already archived."
+
+
+class PersonNotArchivedError(ConflictError):
+    code = ErrorCode.PERSON_NOT_ARCHIVED
+    message = "That person is not archived."

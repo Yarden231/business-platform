@@ -1,8 +1,8 @@
 """What the migrations actually built.
 
-Phase 1 creates the platform and nothing else. This test is the guard against
-the schema quietly growing ahead of the roadmap — a table appearing here that
-no phase has agreed to is a review conversation, not a merge.
+This test is the guard against the schema quietly growing ahead of the
+roadmap — a table appearing here that no phase has agreed to is a review
+conversation, not a merge.
 """
 
 from __future__ import annotations
@@ -10,20 +10,21 @@ from __future__ import annotations
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-PHASE_1_TABLES = {
+PHASE_TABLES = {
     "activity_log",
     "alembic_version",
+    "people",
     "sessions",
     "user_identities",
     "users",
 }
 
 
-async def test_only_the_phase_1_tables_exist(db_engine: AsyncEngine) -> None:
+async def test_only_the_agreed_tables_exist(db_engine: AsyncEngine) -> None:
     async with db_engine.connect() as connection:
         tables = await connection.run_sync(lambda sync: set(inspect(sync).get_table_names()))
 
-    assert tables == PHASE_1_TABLES
+    assert tables == PHASE_TABLES
 
 
 async def test_pg_trgm_is_installed(db_session: AsyncSession) -> None:
