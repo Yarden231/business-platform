@@ -5,7 +5,13 @@ import tseslint from 'typescript-eslint';
 /** @type {import('eslint').Linter.Config[]} */
 const config = [
   {
-    ignores: ['.next/**', 'next-env.d.ts', 'coverage/**'],
+    ignores: [
+      '.next/**',
+      'next-env.d.ts',
+      'coverage/**',
+      'playwright-report/**',
+      'test-results/**',
+    ],
   },
   ...next,
   {

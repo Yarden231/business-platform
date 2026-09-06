@@ -1,40 +1,32 @@
-import { render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import HomePage from '@/app/page';
-import { he } from '@/messages/he';
+import { HomePage } from '@/components/home-page';
+import { t } from '@/messages/t';
 
-beforeEach(() => {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn<typeof fetch>(() =>
-      Promise.resolve(
-        new Response(JSON.stringify({ status: 'ok' }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      ),
-    ),
-  );
-});
+import { jsonResponse, renderWithProviders, testUser } from './helpers';
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('HomePage', () => {
-  it('renders the Hebrew organisation and product names', () => {
-    render(<HomePage />);
+describe('authenticated home', () => {
+  it('renders the organisation name in the shell context via the home greeting', () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(() => Promise.resolve(jsonResponse({ status: 'ok' }))),
+    );
+
+    renderWithProviders(<HomePage user={testUser} />);
 
     expect(
-      screen.getByRole('heading', { level: 1, name: he.app.organizationName }),
+      screen.getByRole('heading', {
+        level: 1,
+        name: t('home.title', { name: testUser.full_name }),
+      }),
     ).toBeInTheDocument();
-    expect(screen.getByText(he.app.productName)).toBeInTheDocument();
-  });
-
-  it('shows the API connectivity panel', () => {
-    render(<HomePage />);
-
-    expect(screen.getByRole('heading', { level: 2, name: he.apiHealth.title })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { level: 2, name: t('home.systemSectionTitle') }),
+    ).toBeInTheDocument();
   });
 });

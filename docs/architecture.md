@@ -1,14 +1,16 @@
 # Architecture
 
-> **Status:** Phases 0–2 implemented; the rest is the agreed target design.
+> **Status:** Phases 0–3 implemented; the rest is the agreed target design.
 >
 > **In the repository today:** the runtime topology and migration workflow of §3; **every package of
 > §4** — `main`, `api`, `schemas`, `services`, `repositories`, `auth`, `audit`, `models`, `db`,
 > `domain`, `core`, `cli` — and the import contracts that hold them apart; the middleware chain, error
 > envelope and transaction boundary of §5; the **authentication provider boundary, session management
 > and role gates of §6**; the audit recorder and its append-only table in §7, now carrying real
-> authentication events; the configuration, logging and health endpoints of §10; the test-database
-> harness of §11; and the quality gates of §12 including migration-drift detection.
+> authentication events; the **Hebrew RTL web shell, login UI, typed API client and generated
+> OpenAPI types of §9**; the configuration, logging and health endpoints of §10; the test-database
+> harness of §11; and the quality gates of §12 including migration-drift detection and the
+> OpenAPI-types freshness check.
 >
 > **Still design:** the object- and query-scoping halves of §6 (they need `people` and `cases` to scope
 > *to*), §8 (document storage), and the feature-facing parts of §7 (case workflow,
@@ -142,7 +144,7 @@ apps/api/
     domain/          Pure logic: enums, status-transition graph, invariants, value objects [exists]
     db/              Engine, session factory, unit of work, base metadata           [exists]
     auth/            Password hashing, session handling, identity providers, policies [exists]
-    storage/         StorageService protocol + Azure Blob adapter + test fake
+    storage/         StorageService protocol + Azure Blob adapter + test fake   [Phase 6]
     audit/           Audit recorder and action catalogue                            [exists]
     core/            Settings, logging, errors, pagination, time, request context   [exists]
     cli/             Operator commands that run outside the API (admin bootstrap)   [exists]
@@ -399,21 +401,19 @@ graph LR
 
 ```text
 apps/web/src/
-  app/                      App Router: (auth)/login, (app)/dashboard, cases, people, ...
-  components/ui/            shadcn/ui primitives (generated, RTL-verified)
-  components/               Shared presentational components
-  features/<feature>/       Feature slices: components, hooks, queries, schemas
+  app/                      App Router: (auth)/login, (app)/ home and change-password
+  components/ui/            shadcn/ui primitives (RTL-verified)
+  components/               Shared presentational components, including the application shell
+  features/auth/            Login and password-change forms, zod schemas, TanStack Query hooks
   lib/api/                  Typed fetch client + generated OpenAPI types + error mapping
   lib/                      Formatting (dates, numbers), utils, constants
   messages/he.ts            Single Hebrew message catalog, accessed through t()
-  types/                    Shared domain-facing TS types
-  hooks/                    Cross-feature hooks
+  proxy.ts                  Cookie-presence redirect to /login (UX only)
 ```
 
-Phase 0 created `app/` (one page and the RTL root layout), `components/` with `components/ui/`
-holding the single primitive that page uses, `lib/utils.ts` and `messages/he.ts`. The catalog is
-already the only place Hebrew copy lives; the `t()` accessor, the typed API client, the generated
-OpenAPI types and the feature slices are Phase 3.
+Phase 3 filled this in. `(auth)/login` is the public screen; `(app)/` is the authenticated shell.
+People, cases, documents and the dashboard routes arrive with those phases — the home page says so
+rather than inventing placeholder screens.
 
 - **Typed contract, no drift.** `lib/api/schema.d.ts` is generated from the API's OpenAPI document by
   `openapi-typescript` and checked in; CI regenerates it and fails if it differs. Request/response
@@ -433,9 +433,9 @@ OpenAPI types and the feature slices are Phase 3.
   `Intl.DateTimeFormat('he-IL', { timeZone: 'Asia/Jerusalem' })`. Business dates
   (deadlines, appointment/separation dates) are date-only strings and are never passed through a
   timezone conversion (ADR-0015). "This week" means Sunday→Saturday, Jerusalem time.
-- **Route protection is UX only.** Next.js middleware redirects to `/login` when the session cookie is
-  absent, and the protected layout server-side-fetches `GET /api/v1/auth/me` and redirects on 401.
-  Neither is a security control; the API enforces everything.
+- **Route protection is UX only.** The Next.js `proxy.ts` redirects to `/login` when the session
+  cookie is absent, and the protected layout server-side-fetches `GET /api/v1/auth/me` and redirects
+  on 401. Neither is a security control; the API enforces everything.
 
 ## 10. Configuration, secrets and observability
 
@@ -518,9 +518,11 @@ restating the commands, so there is a single definition of "passing".
   diff), so a model change without a migration fails CI. This runs as an integration test rather than
   a separate command, because it needs a migrated database to compare against.
 
-Everything above is implemented except the OpenAPI-types freshness check, which arrives in Phase 3
-with the generated client. CI provides a PostgreSQL service and runs `./scripts/migrate` before
-`./scripts/check`, so the migration entry point is exercised on every push as well.
+Everything above is implemented, including the OpenAPI-types freshness check: `./scripts/check`
+regenerates `apps/web/src/lib/api/schema.d.ts` and fails if it differs from the committed file
+(ADR-0017). Playwright authentication flows are a separate entry point, `./scripts/e2e`, because
+they need the running web origin. CI provides a PostgreSQL service and runs `./scripts/migrate`
+before `./scripts/check`, so the migration entry point is exercised on every push as well.
 
 ## 13. Known architectural risks
 

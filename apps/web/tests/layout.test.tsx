@@ -1,5 +1,9 @@
 import type { ReactElement } from 'react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('next/font/google', () => ({
+  Heebo: () => ({ variable: '--font-heebo', className: 'font-heebo' }),
+}));
 
 import RootLayout from '@/app/layout';
 

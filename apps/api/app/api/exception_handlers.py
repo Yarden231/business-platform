@@ -46,7 +46,7 @@ _STATUS_CODES: Final[dict[int, tuple[ErrorCode, str]]] = {
 def error_response(
     *,
     status_code: int,
-    code: ErrorCode | str,
+    code: ErrorCode,
     message: str,
     details: list[ErrorDetail] | None = None,
 ) -> JSONResponse:
@@ -59,7 +59,7 @@ def error_response(
     request_id = get_request_id() or _UNKNOWN_REQUEST_ID
     envelope = ErrorEnvelope(
         error=ErrorBody(
-            code=str(code),
+            code=code,
             message=message,
             details=[ErrorDetailModel(field=d.field, issue=d.issue) for d in details or []],
             request_id=request_id,

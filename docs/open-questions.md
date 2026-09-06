@@ -23,6 +23,9 @@
 > Phase 2 note: **Q10 is now enforced from that configuration**, so it is answered in the only sense
 > that matters to the code — the numbers are a deployment decision the owner can still revise without
 > a release. Uploads (Q9c) remain unenforced until Phase 6.
+>
+> Phase 3 note: the browser now logs in, rotates a temporary password and logs out through the
+> same-origin proxy. No new open questions; Q7 remains the next blocking item (Phase 4).
 > Last reviewed: 2026-09-06
 
 ---

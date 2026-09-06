@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from app.core.errors import ErrorCode
+
 
 class ErrorDetailModel(BaseModel):
     """One field-level problem."""
@@ -16,7 +18,13 @@ class ErrorDetailModel(BaseModel):
 
 
 class ErrorBody(BaseModel):
-    code: str = Field(description="Stable error code; the web app maps it to Hebrew copy.")
+    #: Typed as the enum rather than `str` so the published OpenAPI document
+    #: carries the whole code list. The web application generates its types from
+    #: that document (ADR-0017), which makes its Hebrew error mapper a
+    #: `Record<ErrorCode, string>` — exhaustive at compile time. A code added
+    #: here without a Hebrew message therefore breaks the web build, which is
+    #: the check ADR-0014 asks for (ADR-0039).
+    code: ErrorCode = Field(description="Stable error code; the web app maps it to Hebrew copy.")
     message: str = Field(description="English, developer-facing. Never shown to an end user.")
     details: list[ErrorDetailModel] = Field(default_factory=list)
     request_id: str = Field(description="Matches the X-Request-ID header and the server log entry.")

@@ -4,23 +4,18 @@ Internal case management platform for **כהן איזונים פיננסיים**
 financial/actuarial consultancy. The platform replaces the current Excel + Outlook + shared-folder
 workflow with a single system of record for cases, people, deadlines, documents and activity history.
 
-> **Project status: Phase 2 complete — authentication, sessions and internal user administration.**
-> Phase 0 built the stack (PostgreSQL, Azurite, FastAPI, Next.js, the Hebrew RTL shell page, the
-> same-origin `/api/v1/*` proxy and every quality gate). Phase 1 built the backend platform (typed
-> settings, async SQLAlchemy, Alembic, the four infrastructure tables, a database-enforced append-only
-> audit log, structured logging with request IDs, the error envelope, `/readyz`, integration tests
-> against real PostgreSQL).
+> **Project status: Phase 3 complete — Hebrew RTL web shell and authentication UI.**
+> Phase 0 built the stack. Phase 1 built the backend platform. Phase 2 made authentication live over
+> the API. Phase 3 closes the browser loop: a Hebrew RTL login page, forced password change, an
+> application shell with logout, a typed same-origin API client generated from the OpenAPI document,
+> and Playwright flows that log an administrator in and out through the `/api/v1` proxy.
 >
-> Phase 2 makes those tables live. Working today, over the API: Argon2id password hashing behind an
-> `AuthenticationProvider` boundary; opaque server-side sessions in HttpOnly cookies with
-> session-bound CSRF tokens, idle and absolute expiry and immediate revocation; per-identity lockout
-> and per-IP login throttling with a single uniform login failure; `ADMIN`/`EMPLOYEE` role gates;
-> admin-provisioned staff accounts with a one-time temporary password and forced rotation;
-> deactivation and reactivation; the staff directory; and audited authentication and
-> user-administration events. A first administrator is created with `./scripts/create-admin`.
+> Working today in the browser: email + password login; `PASSWORD_CHANGE_REQUIRED` routing to
+> `/change-password`; the session cookie stays `HttpOnly` / `SameSite=Lax`; the script reads
+> `csrf_token` and sends `X-CSRF-Token` on unsafe requests; nothing authentication-related is stored
+> in `localStorage` or `sessionStorage`.
 >
-> **There is no login UI yet** — Phase 2 is API behaviour, and the browser screens are Phase 3. Also
-> still absent: people, cases, documents and the dashboard.
+> Still absent: people, cases, documents and the dashboard.
 >
 > Documents marked _Planned_ describe the target design that later phases will implement; they are
 > updated at the end of each phase so they always describe what is actually in the repository. See
@@ -59,7 +54,7 @@ advanced BI, and production cloud deployment. The architecture leaves room for a
 | API | Python 3.12, FastAPI, Pydantic v2 + pydantic-settings, SQLAlchemy 2.x (async, `asyncpg`), Alembic, structlog |
 | Database | PostgreSQL 18 |
 | Object storage | Azure Blob Storage (Azurite for local development) |
-| Tests | pytest + httpx ASGI transport (API), Vitest + React Testing Library (web), Playwright (E2E, Phase 3+) |
+| Tests | pytest + httpx ASGI transport (API), Vitest + React Testing Library (web), Playwright (authentication E2E) |
 | Local infra | Docker, Docker Compose v2 |
 | Production target | Microsoft Azure (container hosting, Azure Database for PostgreSQL, Blob Storage, Key Vault, Application Insights) — Phase 10, nothing deployed in Release 1 |
 
@@ -82,14 +77,16 @@ Rationale for each choice is recorded in [`docs/decisions.md`](docs/decisions.md
       migrations/        Alembic environment and revisions
       tests/             pytest suite: unit/ (no database) and integration/ (real PostgreSQL)
     web/                 Next.js application (TypeScript)
-      src/app/           App Router
-      src/components/    Components, including the shadcn/ui primitives in ui/
-      src/lib/           Utilities
-      src/messages/      Hebrew message catalog
+      src/app/           App Router: (auth)/login, (app)/ shell
+      src/components/    Shell, shared components, shadcn/ui primitives
+      src/features/      Feature slices (authentication in Phase 3)
+      src/lib/           Typed API client, formatting, utilities
+      src/messages/      Hebrew message catalog and t()
       tests/             Vitest + React Testing Library suite
+      e2e/               Playwright authentication flows
   docs/                  Architecture and process documentation
   infra/docker/          Dockerfiles for the local api and web images
-  scripts/               install, dev, check, test, migrate, create-admin
+  scripts/               install, dev, check, test, migrate, create-admin, generate-api-types, e2e
   .github/workflows/     GitHub Actions CI
   docker-compose.yml     Local stack: db, azurite, api, web
   .env.example           Documented environment variables, no real secrets
@@ -192,19 +189,11 @@ changes nothing, so it is safe in a startup script and cannot quietly overwrite 
 account after this one is created by that administrator through `POST /api/v1/users`. Use obviously
 fake credentials locally, and never commit them.
 
-There is no login page yet (Phase 3), so exercise the API directly:
-
-```bash
-curl -i -c jar.txt -X POST http://localhost:3000/api/v1/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"admin@example.test","password":"…"}'
-
-curl -s -b jar.txt http://localhost:3000/api/v1/auth/me
-```
-
-Mutating requests additionally need the CSRF token: read `csrf_token` out of the cookie jar and send
-it as `X-CSRF-Token`. See [`docs/security.md`](docs/security.md) §3 and [`docs/api.md`](docs/api.md)
-§4.
+Open <http://localhost:3000> and sign in with that account. A temporary password (an employee created
+through `POST /api/v1/users`) lands on the password-change screen before anything else. Mutating
+requests from the browser send `X-CSRF-Token` automatically; if you call the API with curl, read
+`csrf_token` out of the cookie jar and send it as that header. See
+[`docs/security.md`](docs/security.md) §3 and [`docs/api.md`](docs/api.md) §4.
 
 ### Stop, and reset
 
@@ -227,16 +216,23 @@ Install the toolchain once, then use the scripts. Every one of them exits non-ze
 ./scripts/dev       # docker compose up --build
 ./scripts/migrate   # alembic upgrade head against DATABASE_URL
 ./scripts/create-admin  # create the first ADMIN account (interactive or env-driven)
+./scripts/generate-api-types  # regenerate apps/web/src/lib/api/schema.d.ts from the API
+./scripts/e2e           # Playwright login / password-change / logout against a running stack
 ```
 
 `./scripts/check` runs, in order: Compose configuration validation, `ruff format --check`,
-`ruff check`, `mypy`, `import-linter`, `pytest`, `prettier --check`, `eslint`, `tsc --noEmit`,
-`vitest run` and the production Next.js build. [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
-invokes the same script rather than restating the commands, so there is one definition of "passing".
+`ruff check`, `mypy`, `import-linter`, `pytest`, the generated-OpenAPI-types freshness check,
+`prettier --check`, `eslint`, `tsc --noEmit`, `vitest run` and the production Next.js build.
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) invokes the same script rather than restating
+the commands, so there is one definition of "passing". Playwright authentication flows are
+`./scripts/e2e` and need the running web origin.
 
 `check` and `test` need PostgreSQL running (`docker compose up -d db`); they say so and stop rather
 than failing halfway through. They load `.env`, so host tooling and the Compose stack read the same
-configuration.
+configuration. `./scripts/e2e` needs the web origin as well (`./scripts/dev` or Next.js + uvicorn on
+the host) and an administrator. Export `E2E_ADMIN_EMAIL` / `E2E_ADMIN_PASSWORD` to match an existing
+`ADMIN` account, or leave them unset so the script can create one with `create-admin` when the
+database has none yet.
 
 ### Database and migrations
 

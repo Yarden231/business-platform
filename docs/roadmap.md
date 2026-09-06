@@ -1,6 +1,6 @@
 # Implementation roadmap
 
-> **Status:** Phases 0, 1 and 2 complete. Phases 3–10 are planned. This document is the agreed
+> **Status:** Phases 0, 1, 2 and 3 complete. Phases 4–10 are planned. This document is the agreed
 > sequencing for Release 1; each phase updates it with actual status on completion.
 > Last reviewed: 2026-09-06
 
@@ -137,7 +137,7 @@ the six end-to-end flows in `tests/integration/test_auth_flows.py`.
 - **No login UI**, by design: the browser screens are Phase 3, and this phase changed nothing in
   `apps/web`.
 
-## Phase 3 — Web shell and authentication UI
+## Phase 3 — Web shell and authentication UI — **COMPLETE**
 
 **Goal:** prove the whole browser→proxy→API→cookie loop and the Hebrew RTL foundation before building
 features on top of it.
@@ -152,8 +152,25 @@ features on top of it.
   redirecting on `401`, accessible form errors in Hebrew.
 - Vitest + RTL component tests; first Playwright test: log in, land on the shell, log out.
 
-**Exit criteria:** an admin created by the Phase 2 script can log in and out in a real browser; RTL
-layout reviewed; no Hebrew string outside the catalog; `tsc --noEmit` clean with no `any`.
+**Exit criteria — met.** An administrator created by `./scripts/create-admin` can log in and out in a
+real browser through the same-origin `/api/v1` proxy. A temporary-password account is routed to
+`/change-password` until rotation. Hebrew copy lives only in `messages/he.ts`. `tsc --noEmit` is
+clean with no `any`.
+
+**Delivered as designed, with these notes:**
+
+- **No business screens.** The authenticated home page states that people, cases, documents and the
+  dashboard are later phases. Inventing placeholder KPI cards would have been the fake product this
+  project avoids.
+- **`ErrorBody.code` is now the `ErrorCode` enum** (ADR-0039), so the generated OpenAPI types make
+  the Hebrew mapper a `Record<ErrorCode, string>` — a code added to the API without a catalog entry
+  is a compile error.
+- Playwright authentication flows live in `apps/web/e2e/` and run with `./scripts/e2e` against a
+  running stack. They are not part of `./scripts/check`: they need the web origin and an
+  administrator, which CI does not start. Phase 9 is when the full critical flow joins CI against
+  Compose.
+- Session and CSRF tokens are never written to `localStorage` or `sessionStorage`; a test fails the
+  build if any file under `src/` mentions web storage.
 
 ## Phase 4 — People directory
 

@@ -6,6 +6,8 @@ import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
+from app.core.errors import ErrorCode
+
 
 @pytest.mark.parametrize("path", ["/healthz", "/api/v1/healthz"])
 async def test_healthz_reports_ok(client: AsyncClient, path: str) -> None:
@@ -25,7 +27,7 @@ def test_openapi_publishes_the_versioned_probes_only(app: FastAPI) -> None:
     """The unversioned paths are infrastructure probes, so they stay out of the contract.
 
     `/api/v1/*` is what the web application calls, so it is published and will
-    appear in the generated TypeScript types from Phase 3 onward.
+    appear in the generated TypeScript types.
     """
     paths = app.openapi()["paths"]
 
@@ -33,3 +35,11 @@ def test_openapi_publishes_the_versioned_probes_only(app: FastAPI) -> None:
     assert "/api/v1/readyz" in paths
     assert "/healthz" not in paths
     assert "/readyz" not in paths
+
+
+def test_openapi_publishes_the_error_code_enum(app: FastAPI) -> None:
+    """ADR-0039: the envelope's `code` is the ErrorCode enum, so the generated
+    client types stay exhaustive as new codes are added.
+    """
+    schema = app.openapi()["components"]["schemas"]["ErrorCode"]
+    assert set(schema["enum"]) == {member.value for member in ErrorCode}

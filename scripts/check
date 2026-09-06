@@ -38,6 +38,18 @@ uv run lint-imports
 section "API — pytest"
 uv run pytest
 
+# The generated client types are committed (ADR-0017). Regenerating them here
+# and diffing means a route or model change that was not accompanied by
+# `./scripts/generate-api-types` fails the build instead of surfacing as a
+# runtime mismatch in the browser.
+section "Web — generated API types are current"
+cd "${REPO_ROOT}"
+generated="$(mktemp -t schema.XXXXXX).d.ts"
+trap 'rm -f "${generated}"' EXIT
+./scripts/generate-api-types "${generated}"
+diff -u apps/web/src/lib/api/schema.d.ts "${generated}" ||
+  fail "apps/web/src/lib/api/schema.d.ts is stale. Run: ./scripts/generate-api-types"
+
 section "Web — prettier"
 cd "${REPO_ROOT}"
 npx prettier --check .

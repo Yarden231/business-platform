@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+#
+# Playwright authentication flows against a running stack (the web origin at
+# WEB_PORT, API reached through the same-origin /api/v1 proxy).
+#
+# Requires:
+#   - the Compose stack, or Next.js + uvicorn on the host
+#   - an administrator the tests can log in as
+#
+# Credentials come from E2E_ADMIN_EMAIL / E2E_ADMIN_PASSWORD, falling back to
+# BOOTSTRAP_ADMIN_*. If neither is set, the script tries the disposable
+# addresses below and, only when the database has no administrator yet,
+# creates one with create-admin.
+#
+# When an administrator already exists (the usual case after Phase 2), export
+# E2E_ADMIN_* to match that account. create-admin will not invent a second one.
+
+set -euo pipefail
+# shellcheck source=scripts/_lib.sh
+source "$(dirname "$0")/_lib.sh"
+
+require_installed_dependencies
+load_env
+
+WEB_ORIGIN="http://localhost:${WEB_PORT:-3000}"
+export WEB_ORIGIN
+
+section "Waiting for the web origin"
+if ! curl -fsS --max-time 3 "${WEB_ORIGIN}/api/v1/healthz" >/dev/null; then
+  fail "The web origin is not serving ${WEB_ORIGIN}/api/v1/healthz. Start the stack with ./scripts/dev"
+fi
+
+E2E_ADMIN_EMAIL="${E2E_ADMIN_EMAIL:-${BOOTSTRAP_ADMIN_EMAIL:-e2e-admin@example.test}}"
+E2E_ADMIN_FULL_NAME="${E2E_ADMIN_FULL_NAME:-${BOOTSTRAP_ADMIN_FULL_NAME:-E2E Admin}}"
+E2E_ADMIN_PASSWORD="${E2E_ADMIN_PASSWORD:-${BOOTSTRAP_ADMIN_PASSWORD:-e2e-admin-development-passphrase}}"
+export E2E_ADMIN_EMAIL E2E_ADMIN_PASSWORD
+
+admin_login_status() {
+  python3 - <<'PY'
+import json
+import os
+import urllib.error
+import urllib.request
+
+url = os.environ["WEB_ORIGIN"] + "/api/v1/auth/login"
+body = json.dumps(
+    {
+        "email": os.environ["E2E_ADMIN_EMAIL"],
+        "password": os.environ["E2E_ADMIN_PASSWORD"],
+    }
+).encode()
+request = urllib.request.Request(
+    url,
+    data=body,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(request, timeout=8) as response:
+        print(response.status)
+except urllib.error.HTTPError as error:
+    print(error.code)
+PY
+}
+
+if [ "$(admin_login_status)" = "204" ]; then
+  section "Administrator credentials accepted"
+else
+  section "Ensuring an administrator exists"
+  if ! BOOTSTRAP_ADMIN_EMAIL="${E2E_ADMIN_EMAIL}" \
+    BOOTSTRAP_ADMIN_FULL_NAME="${E2E_ADMIN_FULL_NAME}" \
+    BOOTSTRAP_ADMIN_PASSWORD="${E2E_ADMIN_PASSWORD}" \
+    "${REPO_ROOT}/scripts/create-admin"; then
+    fail "Could not log in as ${E2E_ADMIN_EMAIL} and could not create an administrator. Export E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD to match an existing ADMIN account."
+  fi
+  if [ "$(admin_login_status)" != "204" ]; then
+    fail "create-admin ran but ${E2E_ADMIN_EMAIL} still cannot log in."
+  fi
+fi
+
+section "Playwright browsers"
+cd "${REPO_ROOT}"
+npx --workspace apps/web playwright install chromium
+
+section "Playwright authentication flows"
+npm run test:e2e --workspace apps/web

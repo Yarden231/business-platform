@@ -686,3 +686,20 @@ revocation apply to every session independently, and the three events that mean 
 compromised" already clear the lot. A user who wants every other session ended changes their password.
 The cost is that a stolen laptop's session survives until it expires or somebody acts — which is true
 of any per-device scheme, and is what deactivation is for.
+
+---
+
+## ADR-0039 — Error envelope `code` is the `ErrorCode` enum in OpenAPI (Phase 3)
+
+**Context.** ADR-0014 puts Hebrew copy in the web catalog, keyed by the API's stable `code`.
+ADR-0017 generates the web client's types from the OpenAPI document. If `ErrorBody.code` stayed a
+plain `string`, a new API code would compile on the client with no Hebrew message and leak English
+into the UI.
+
+**Decision.** `ErrorBody.code` is typed as `ErrorCode`. FastAPI therefore publishes the full enum in
+the OpenAPI document; `openapi-typescript` generates a closed union; the catalog is
+`Record<ErrorCode, string>`. `./scripts/check` regenerates the types and fails on a diff.
+
+**Consequences.** Adding a code without a Hebrew string is a frontend compile error, which is the
+check ADR-0014 asked for. Cost: a one-line type change on the envelope, and a generation step after
+any new `ErrorCode` member.

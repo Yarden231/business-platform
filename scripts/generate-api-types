@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+#
+# Regenerate the web application's API types from the API's OpenAPI document.
+#
+#   ./scripts/generate-api-types            # rewrite the committed file
+#   ./scripts/generate-api-types <path>     # write somewhere else (used by ./scripts/check)
+#
+# The output is committed (ADR-0017) and ./scripts/check fails if regenerating
+# it produces a diff, so the client and the server cannot drift silently. Run
+# this after any change to a route, a request model or a response model, and
+# commit the result with that change.
+#
+# No server and no database are needed: the document is built from the
+# application object in-process by app/cli/dump_openapi.py.
+
+set -euo pipefail
+# shellcheck source=scripts/_lib.sh
+source "$(dirname "$0")/_lib.sh"
+
+DEFAULT_OUTPUT="${REPO_ROOT}/apps/web/src/lib/api/schema.d.ts"
+OUTPUT="${1:-${DEFAULT_OUTPUT}}"
+
+require_installed_dependencies
+
+document="$(mktemp -t openapi.XXXXXX.json)"
+trap 'rm -f "${document}"' EXIT
+
+(cd "${REPO_ROOT}/apps/api" && uv run python -m app.cli.dump_openapi) >"${document}"
+
+mkdir -p "$(dirname "${OUTPUT}")"
+cd "${REPO_ROOT}"
+npx --no-install openapi-typescript "${document}" \
+  --output "${OUTPUT}" \
+  --root-types \
+  --alphabetize
+
+# Always pass the repository Prettier config and an explicit parser. The
+# freshness check writes to a temp path outside the tree, and without both
+# flags that file would be formatted with Prettier defaults (double quotes)
+# while the committed file uses this project's single quotes.
+npx --no-install prettier --write --log-level warn \
+  --config "${REPO_ROOT}/.prettierrc.json" \
+  --parser typescript \
+  "${OUTPUT}"

@@ -29,8 +29,12 @@
 >   process with a default session secret, a non-TLS database URL, insecure session cookies, or
 >   debug/docs/SQL-echo enabled.
 >
-> **Still design:** the person and case rows of §4 (authorization), and §6 (uploads). There is no
-> login *UI* — Phase 2 is the backend; the browser authentication screens are Phase 3.
+> **Still design:** the person and case rows of §4 (authorization), and §6 (uploads).
+>
+> **Phase 3 added the browser screens:** login, forced password change, the application shell and
+> logout. The session cookie remains `HttpOnly` and `SameSite=Lax`; the browser reads `csrf_token`
+> and sends `X-CSRF-Token` on unsafe requests. Nothing authentication-related is written to
+> `localStorage` or `sessionStorage`.
 > Last reviewed: 2026-09-06
 
 ## 1. What we are protecting
