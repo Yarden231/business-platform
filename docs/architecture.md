@@ -1,8 +1,18 @@
 # Architecture
 
-> **Status:** Planning. Release 1 is not implemented yet. Sections describe the agreed target design.
-> This document is updated at the end of every implementation phase to match the code.
-> Last reviewed: 2026-09-01
+> **Status:** Phases 0–1 implemented; the rest is the agreed target design.
+>
+> **In the repository today:** the runtime topology and migration workflow of §3; the `main`, `api`,
+> `schemas`, `audit`, `models`, `db`, `domain` and `core` packages of §4 and the import contracts that
+> hold them apart; the middleware chain, error envelope and transaction boundary of §5; the audit
+> recorder and its append-only table in §7; the configuration, logging and health endpoints of §10;
+> the test-database harness of §11; and the quality gates of §12 including migration-drift detection.
+>
+> **Still design:** everything in §6 (authentication and authorization), §8 (document storage), the
+> service and repository layers, and the feature-facing parts of §7 (case workflow,
+> `last_activity_at`). This document is updated at the end of every implementation phase to match the
+> code.
+> Last reviewed: 2026-09-02
 
 ## 1. Purpose and constraints
 
@@ -59,15 +69,52 @@ and audit layers.
 
 ### Local development (Docker Compose)
 
+Implemented.
+
 | Service | Image / build | Port | Notes |
 | --- | --- | --- | --- |
-| `db` | `postgres` (pinned minor) | 5432 | Named volume, `pg_trgm` extension enabled by migration |
-| `azurite` | `mcr.microsoft.com/azure-storage/azurite` | 10000 | Blob endpoint only; well-known dev credentials |
-| `api` | `infra/docker/api.Dockerfile` | 8000 | Alembic `upgrade head` on start in dev only |
-| `web` | `infra/docker/web.Dockerfile` | 3000 | Proxies `/api/v1/*` to `api` so cookies stay first-party |
+| `db` | `postgres:18.6-trixie` | 5432 | Named volume on `/var/lib/postgresql`, `pg_isready` healthcheck. Holds `pg_trgm` and the four infrastructure tables |
+| `azurite` | `mcr.microsoft.com/azure-storage/azurite:3.37.0` | 10000 | Blob endpoint only (`azurite-blob`), named volume, TCP healthcheck; well-known emulator credentials |
+| `api` | `infra/docker/api.Dockerfile` | 8000 | `alembic upgrade head`, then `uvicorn --reload` over a bind-mounted source tree; `/healthz` healthcheck |
+| `web` | `infra/docker/web.Dockerfile` | 3000 | `next dev`; rewrites `/api/v1/*` to `api` so cookies stay first-party |
+
+The `api` service receives its own `DATABASE_URL` (the `db` service on port 5432) from Compose. The
+`DATABASE_URL` in `.env` is the *host's* view of the same database and belongs to everything that runs
+outside the network — `./scripts/migrate`, `./scripts/test`, Alembic and pytest. Two views, each
+written down once.
 
 The browser only ever talks to the web origin. This is what makes `SameSite=Lax` session cookies work
-without `SameSite=None`, and it is the same shape we deploy in production (ADR-0005).
+without `SameSite=None`, and it is the same shape we deploy in production (ADR-0005). Port 8000 is
+published for developer diagnostics; no browser code addresses it.
+
+Both Dockerfiles are development images. The production multi-stage builds belong to Phase 10.
+
+### Schema migrations
+
+Alembic owns the schema. Nothing in the application or the test suite calls
+`Base.metadata.create_all()`, so there is exactly one description of the database and it is the one
+under review in a pull request. `migrations/env.py` runs against the same async engine the
+application uses, reads its URL from the application's settings (overridable with
+`-x db_url=...` or, for the test harness, `config.attributes["db_url"]`), and installs the
+application's logging pipeline so a migration's output is structured like everything else.
+
+**Development** applies migrations at container start-up (ADR-0033): a single-container stack has no
+deployment pipeline to run them from, and a developer switching branches should get a matching schema
+without remembering a second command.
+
+**Production must not do this.** Several replicas starting at once would race each other through the
+same DDL, and a failed migration would take the deployment down one container at a time instead of
+failing before any traffic moved. The deployment runs `alembic upgrade head` once, as its own step,
+before the new revision starts — under a database role that holds `CREATE`/`DROP` while the runtime
+role does not (Phase 10; [`security.md`](security.md) §9). Migrations therefore have to be
+backward-compatible with the revision still serving traffic during a rollout, which is a constraint on
+how they are written, not a runtime setting: additive first, destructive changes in a later release.
+
+**Drift** between the models and the head revision is a test, not a habit:
+`tests/integration/test_migrations.py` runs Alembic's autogenerate comparison and fails on any diff.
+Its limits are worth stating — autogenerate does not see triggers, functions, extensions or grants, so
+the append-only trigger is covered by behavioural tests (`test_activity_log_immutability.py`) and the
+`pg_trgm` extension by a schema assertion instead.
 
 ### Production target (Release 1+, not deployed in Release 1)
 
@@ -82,23 +129,34 @@ through OpenTelemetry-compatible logging (§10).
 ## 4. Backend layering
 
 ```text
-apps/api/app/
-  main.py            FastAPI app factory, middleware, exception handlers, routers
-  api/               HTTP layer: routers, dependencies, request/response wiring only
-  schemas/           Pydantic v2 request/response models (the public contract)
-  services/          Use cases: transaction boundary, orchestration, audit + activity emission
-  repositories/      Query/persistence encapsulation, including actor-scoped queries
-  models/            SQLAlchemy ORM mappings
-  domain/            Pure logic: enums, status-transition graph, invariants, value objects
-  db/                Engine, session factory, unit of work, base metadata, migrations env
-  auth/              Password hashing, session handling, identity providers, policies
-  storage/           StorageService protocol + Azure Blob adapter + test fake
-  audit/             Audit recorder and action catalogue
-  core/              Settings, logging, errors, pagination, time, request context
-  tests/             unit / integration / factories
+apps/api/
+  app/
+    main.py          FastAPI application, middleware, exception handlers, routers   [exists]
+    api/             HTTP layer: routers, dependencies, request/response wiring only [exists]
+    schemas/         Pydantic v2 request/response models (the public contract)      [exists]
+    services/        Use cases: transaction boundary, orchestration, audit + activity emission
+    repositories/    Query/persistence encapsulation, including actor-scoped queries
+    models/          SQLAlchemy ORM mappings                                        [exists]
+    domain/          Pure logic: enums, status-transition graph, invariants, value objects [exists]
+    db/              Engine, session factory, unit of work, base metadata           [exists]
+    auth/            Password hashing, session handling, identity providers, policies
+    storage/         StorageService protocol + Azure Blob adapter + test fake
+    audit/           Audit recorder and action catalogue                            [exists]
+    core/            Settings, logging, errors, pagination, time, request context   [exists]
+  migrations/        Alembic environment and revisions                              [exists]
+  tests/             unit/ (no database), integration/ (real PostgreSQL), support/  [exists]
 ```
 
-Dependency rules (verified in CI by an `import-linter` contract from Phase 1 onward):
+Tests sit beside `app/`, not inside it, so they are never packaged into the runtime image. Migrations
+sit beside `app/` too, for two reasons: they import the models to build `target_metadata`, which
+`app.db` is not permitted to do, and they are a historical record rather than application code —
+revision `0001` must keep running unchanged years after the model it created has moved on.
+
+Packages without `[exists]` are created by the phase that first needs them; an empty directory would
+be an architecture diagram pretending to be code. The layering contract already names them, so they
+are governed from the moment they appear.
+
+Dependency rules, verified in CI by `import-linter`:
 
 | Layer | May import | Must never import |
 | --- | --- | --- |
@@ -107,6 +165,19 @@ Dependency rules (verified in CI by an `import-linter` contract from Phase 1 onw
 | `repositories` | `models`, `domain`, `core`, `db` | `services`, `api`, `schemas` |
 | `domain` | `core` (types only) | `sqlalchemy`, `fastapi`, `repositories`, `services` |
 | `storage`, `audit` | `core`, `models` (audit only), `domain` | `api`, `services` |
+
+Five contracts express that table in `pyproject.toml`. Four of them are worth explaining, because the
+obvious single contract would not have held:
+
+1. **A layers contract** orders `main → api → schemas → services → auth → audit/storage →
+   repositories → models → db → domain → core`, with the not-yet-created layers marked optional.
+2. **`api` may not import `models`.** A layers contract only forbids the *upward* direction; reaching
+   past the service layer straight into the ORM is downward, and has to be forbidden by name.
+3. **`domain` is pure** — no `sqlalchemy`, `fastapi`, `starlette` or `alembic`, so the transition
+   graph and the Israeli ID checksum stay unit-testable without a database.
+4. **Only the HTTP layer imports the web framework.** `audit`, `core`, `db`, `domain`, `models` and
+   `schemas` may not import `fastapi` or `starlette`, so everything below the routers is callable from
+   a script, a scheduled job or a test with no request in sight.
 
 Practical consequences:
 
@@ -150,18 +221,34 @@ sequenceDiagram
     M-->>B: typed JSON response (or error envelope)
 ```
 
-Middleware order (outermost first): request context/ID → structured access log → security headers →
-CORS (dev only, strict allowlist) → body-size guard → router. Exception handlers translate domain
-errors into the error envelope defined in [`api.md`](api.md); unhandled exceptions are logged with the
-`request_id` and returned as a generic 500 with no stack trace or internal detail.
+Middleware order (outermost first, as installed today): request context/ID → structured access log →
+security headers → CORS (development only, strict allowlist) → router. The body-size guard joins the
+chain in Phase 6 with uploads. Exception handlers translate application errors into the error envelope
+defined in [`api.md`](api.md); unhandled exceptions are logged with the `request_id` and returned as a
+generic 500 with no stack trace or internal detail.
+
+**Request ID.** Every request is given a fresh UUID4 by the outermost middleware, which binds it to a
+`ContextVar` and to structlog's context, returns it as `X-Request-ID`, and puts it in the error
+envelope. The audit recorder stamps it on every row it writes, so a business event in `activity_log`
+can be joined to the application logs of the request that produced it. A client-supplied
+`X-Request-ID` is **ignored** (ADR-0032): accepting one lets a caller collide, forge or inject into log fields,
+and the correlation is worth nothing if it is attacker-controlled. Propagating a trusted upstream
+trace id is a distinct feature and would arrive as a separate, validated header.
 
 ### Transaction boundary
 
-One `AsyncSession` per request, created by a FastAPI dependency. The **service method** is the
-transaction boundary: it opens a transaction, performs all writes (including audit rows), and commits.
-Repositories never commit. Routers never commit. This guarantees the property the specification
-requires — that audit history cannot diverge from the data it describes — because a rollback discards
-both. Read-only requests run in a transaction that is rolled back at the end.
+One `AsyncSession` per request, created by a FastAPI dependency (`app/db/session.py`) and closed when
+the response is finished. The **service method** is the transaction boundary: `app/db/uow.py` exposes
+an `async with transaction(session):` block that commits on success and rolls back on any exception.
+Repositories never commit. Routers never commit. The audit recorder flushes but never commits, so it
+joins whatever transaction its caller opened.
+
+This is what guarantees the property the specification requires — that audit history cannot diverge
+from the data it describes — because a rollback discards both.
+`tests/integration/test_transaction_boundary.py` proves it rather than asserting it in prose: a
+minimal service creates a user and its audit row, and when the second attempt violates the unique
+constraint on `users.email`, neither the user nor the audit row survives. Read-only requests run in a
+transaction that is rolled back at the end.
 
 Optimistic concurrency: `Case` and `DocumentRequirement` carry a `version` column mapped as
 SQLAlchemy's `version_id_col`. Clients send the version they read; a mismatch returns `409` rather
@@ -184,11 +271,19 @@ Authentication is split into three replaceable pieces so that adding Entra ID la
 Authorization is a dedicated policy module (`auth/policies.py`) invoked from routers via dependencies
 and from services for defence in depth. Three mechanisms, used deliberately:
 
-- **Role gates** — `require_role(Role.ADMIN)` for admin-only endpoints (user management, archiving,
-  global audit).
+- **Role gates** — `require_role(Role.ADMIN)` for admin-only endpoints (user management, case creation,
+  assignment management, archiving, global audit).
 - **Object policies** — `ensure_can_view_case`, `ensure_can_edit_case`, `ensure_can_archive_case`,
-  `ensure_can_review_document`. Pure functions over `(actor, case_access)`.
+  `ensure_can_review_document`, `ensure_can_view_person_detail`, `ensure_can_edit_person`. Pure
+  functions over `(actor, access_facts)`, where the facts are resolved once per request.
 - **Query scoping** — actor-scoped repository methods for every list/aggregate query (ADR-0013).
+
+Person access is resolved by a single predicate,
+`PersonAccessService.has_full_access(actor, person_id)` — true for any `ADMIN`, and for an `EMPLOYEE`
+only when that person has an active participation in a case currently assigned to them. Both
+`ensure_can_view_person_detail` and `ensure_can_edit_person` consume it, and the response schema
+(`PersonDetail` vs `PersonSummary`) is chosen from the same result, so the read scope, the write scope
+and the serialised field set cannot drift apart (ADR-0027).
 
 Hiding a button in the UI is never an authorization mechanism; the web app hides controls purely for
 usability and every corresponding endpoint enforces the same rule independently, with tests asserting
@@ -196,19 +291,34 @@ it (see [`roadmap.md`](roadmap.md) exit criteria).
 
 ## 7. Case workflow, activity and audit
 
-**Status transitions** go through a single `CaseWorkflowService.change_status(...)` backed by a
-declarative graph in `domain/case_workflow.py`. Nothing else in the codebase may assign `Case.status`.
-Every transition writes a `case_status_history` row (append-only) and an audit event. Because the
-graph and the service are the only entry point, later automation (a scheduler, an inbound email
-handler, an AI agent) calls the same method and inherits the same validation, history and audit
-behaviour. See [`open-questions.md`](open-questions.md) Q3 for the one open decision: how strictly the
-graph is enforced in Release 1.
+**Status transitions** go through a single `CaseWorkflowService.change_status(...)`, and nothing else in
+the codebase may assign `Case.status`. Every transition — whatever the case type — is authorized, writes
+an append-only `case_status_history` row, emits an audit event and updates `last_activity_at`, all in one
+transaction. Because the service is the only entry point, later automation (a scheduler, an inbound email
+handler, an AI agent) inherits all of that by calling the same method.
 
-**Audit** (`audit/recorder.py`) is bound to the request's session and used by services:
-`recorder.record(action=..., entity=..., case_id=..., description=..., metadata=..., changes=...)`.
-Rows land in `activity_log` in the same transaction. `UPDATE`/`DELETE` on that table is blocked by a
-database trigger, so "immutable through normal application operations" is enforced by PostgreSQL, not
-by convention (ADR-0010). Application logs are for operators; they are never the business history.
+*Validation*, unlike the rest, depends on the case's type, because only `RESOURCE_BALANCING` has a
+defined business process today (ADR-0009). `domain/case_workflow.py` declares a `WorkflowPolicy`
+protocol and a registry keyed by `case_type`:
+
+| Case type | Policy | Behaviour |
+| --- | --- | --- |
+| `RESOURCE_BALANCING` | `GraphWorkflowPolicy` | Enforces the documented graph; out-of-graph transitions are rejected except for an `ADMIN` supplying a mandatory `reason`, recorded on the history row and in the audit event as an override |
+| all others | `OpenWorkflowPolicy` (default) | Any status may follow any status; the business has no defined sequence for these engagements yet |
+
+No-op transitions are rejected under either policy. Giving another case type a real workflow later means
+writing a graph and registering it against the type — the service, the API and the UI do not change,
+which is what "additive" has to mean in practice. Q3 in [`open-questions.md`](open-questions.md) remains
+open only on whether the documented graph matches the real resource-balancing process.
+
+**Audit** (`audit/recorder.py`) is implemented. It is bound to the caller's session and used by
+services: `recorder.record(action=..., entity_type=..., entity_id=..., case_id=..., description=...,
+metadata=..., changes=...)`, where `action` and `entity_type` are members of the typed catalogue in
+`audit/actions.py`. The recorder fills in `occurred_at` and the current `request_id`, adds the row and
+flushes it, and never commits — so it lands in `activity_log` inside the service's transaction or not
+at all. `UPDATE`/`DELETE`/`TRUNCATE` on that table is blocked by a database trigger, so "immutable
+through normal application operations" is enforced by PostgreSQL, not by convention (ADR-0010).
+Application logs are for operators; they are never the business history.
 
 **`last_activity_at`** is updated only by an explicit allowlist of meaningful actions, resolved from
 the audit action in one place (`domain/activity.py`). Reads never touch it — including document
@@ -261,6 +371,11 @@ apps/web/src/
   hooks/                    Cross-feature hooks
 ```
 
+Phase 0 created `app/` (one page and the RTL root layout), `components/` with `components/ui/`
+holding the single primitive that page uses, `lib/utils.ts` and `messages/he.ts`. The catalog is
+already the only place Hebrew copy lives; the `t()` accessor, the typed API client, the generated
+OpenAPI types and the feature slices are Phase 3.
+
 - **Typed contract, no drift.** `lib/api/schema.d.ts` is generated from the API's OpenAPI document by
   `openapi-typescript` and checked in; CI regenerates it and fails if it differs. Request/response
   types are derived from it, so a backend contract change breaks the frontend build rather than
@@ -285,18 +400,32 @@ apps/web/src/
 
 ## 10. Configuration, secrets and observability
 
-- **Configuration** is a single `pydantic-settings` `Settings` object, populated from environment
-  variables, with no defaults that would be unsafe in production (for example, the app refuses to
-  start with a missing/weak `SESSION_SECRET` when `APP_ENV=production`). `.env.example` documents every
-  variable with a safe placeholder; real values never enter the repository.
+- **Configuration** is a single `pydantic-settings` `Settings` object (`app/core/settings.py`),
+  populated from environment variables. Development defaults are chosen so `docker compose up` and a
+  bare `uvicorn app.main:app` both work with no configuration at all, and every one of those defaults
+  is *rejected* under `APP_ENV=production`: the placeholder session secret, the placeholder database
+  URL, a database URL without TLS, `DEBUG`, `API_DOCS_ENABLED`, `DB_ECHO`, and any CORS origin. The
+  process fails at start-up with all the problems listed at once, rather than serving traffic with a
+  developer posture. `.env.example` documents every variable with a safe placeholder; real values
+  never enter the repository.
 - **Secrets** in production come from Key Vault via the platform's secret injection, so the code path
   is identical to local development. No Azure SDK dependency for configuration (ADR-0020).
-- **Logging** is structured JSON (`structlog`) with `request_id`, `user_id`, route, status and duration.
-  PII and file contents are never logged; audit is the place for business facts. Log fields are chosen
-  so an Application Insights / OpenTelemetry exporter can be added without touching call sites.
-- **Health** endpoints: `GET /healthz` (process liveness, no dependencies) and `GET /readyz`
-  (database connectivity, and storage reachability in production), both unauthenticated and
-  information-free.
+  `SESSION_SECRET` is a `SecretStr`, so it cannot be printed by an accidental `repr(settings)`.
+- **Logging** is structured (`structlog`): JSON in production, a readable console renderer on a
+  developer machine, with the same event dictionary either way, so a field that exists locally exists
+  in production. Standard-library and uvicorn records go through the same pipeline, so the process
+  emits one shape. Access logs carry `request_id`, `method`, the matched route template, `status_code`
+  and `duration_ms`; `user_id` joins them in Phase 2. The query string is never logged — from Phase 4
+  it carries search terms over personal data. A processor redacts a fixed set of keys
+  (`password`, `token`, `session_token`, `csrf_token`, `authorization`, `cookie`, `database_url`,
+  `id_number`, …) whatever a call site passes; that is a safety net, not a licence, and the rule
+  remains that credentials and personal identifiers are not logged at all.
+- **Health** endpoints, both unauthenticated, both information-free: `GET /healthz` reports process
+  liveness and touches nothing, so a database outage cannot get healthy containers restarted;
+  `GET /readyz` executes `SELECT 1` and answers `{"status": "ready"}` or a `503` carrying the standard
+  error envelope with no hostname, credential, driver message or topology in it. Both are mounted
+  twice — unversioned for infrastructure probes and under `/api/v1` for the browser. Storage
+  reachability joins `/readyz` in Phase 6, when the application actually depends on it.
 
 ## 11. Testing architecture
 
@@ -308,11 +437,26 @@ apps/web/src/
 | E2E | Playwright against the Compose stack | The Release 1 critical flow end to end |
 
 Integration tests run against a dedicated test database created by `alembic upgrade head` — never
-`create_all` — so migrations are exercised on every run. Each test runs inside a transaction that is
-rolled back afterwards, except the case-numbering concurrency test, which deliberately uses
-independent sessions and real commits to prove that parallel case creation cannot produce duplicate
-numbers. Storage is exercised through `InMemoryStorageService` in tests, with one Azurite-backed test
-for the Azure adapter itself.
+`create_all` — so migrations are exercised on every run. The harness lives in `tests/support/` and
+`tests/integration/conftest.py`:
+
+- The database is `DATABASE_URL`'s database with `_test` appended, unless `TEST_DATABASE_URL` says
+  otherwise. Deriving it means a developer who changed a port does not have to change a second
+  variable, and a test run can never write to the development database by accident. It is created on
+  first use and migrated once per session.
+- Each test gets an engine with `NullPool` and a session inside an outer transaction that is rolled
+  back afterwards, so tests neither see nor leave each other's rows and the schema is built once
+  rather than per test.
+- `db_client` is an `httpx` client over the ASGI app with the session dependency overridden to that
+  same transaction, so a request made in a test and the assertions after it see one database state.
+- The migration tests are the exception: they create and drop their own throwaway database, because
+  upgrading and downgrading a database cannot happen inside a transaction on that database.
+
+The other documented exception is still ahead of us: the case-numbering concurrency test in Phase 5
+needs independent sessions and real commits to prove that parallel case creation cannot produce
+duplicate numbers, so it will opt out of the rollback fixture and clean up after itself. Storage is
+exercised through `InMemoryStorageService` in tests, with one Azurite-backed test for the Azure
+adapter itself.
 
 The authorization tests listed in the specification (§24) are treated as release-blocking, not
 optional: unauthenticated rejection, employee cannot reach an unassigned case, employee cannot
@@ -321,14 +465,23 @@ after rejection works, status history preserved, audit event written for every m
 
 ## 12. Quality gates
 
-Enforced locally via `scripts/` (or a `Makefile`) and identically in CI:
+One script, `scripts/check`, runs every gate. GitHub Actions invokes that script rather than
+restating the commands, so there is a single definition of "passing".
 
-- API: `ruff format --check`, `ruff check`, `mypy` (strict on `domain`, `services`, `schemas`),
-  `import-linter`, `pytest` with coverage on the layers that matter.
+- API: `ruff format --check`, `ruff check`, `mypy` (currently strict everywhere; it stays strict on
+  `domain`, `services` and `schemas` as the layers appear), `import-linter`, `pytest` with coverage on
+  the layers that matter.
 - Web: `eslint`, `prettier --check`, `tsc --noEmit` with `strict: true` and no `any` escapes,
-  `vitest run`, and the generated-OpenAPI-types freshness check.
-- Migrations: a check that the models and the migration head agree (Alembic autogenerate produces an
-  empty diff), so a model change without a migration fails CI.
+  `vitest run`, the production `next build`, and the generated-OpenAPI-types freshness check.
+- Compose: `docker compose config` validation, which also proves `.env.example` still declares every
+  variable the stack needs, since CI builds its `.env` from that file and nothing else.
+- Migrations: the models and the migration head must agree (Alembic autogenerate produces an empty
+  diff), so a model change without a migration fails CI. This runs as an integration test rather than
+  a separate command, because it needs a migrated database to compare against.
+
+Everything above is implemented except the OpenAPI-types freshness check, which arrives in Phase 3
+with the generated client. CI provides a PostgreSQL service and runs `./scripts/migrate` before
+`./scripts/check`, so the migration entry point is exercised on every push as well.
 
 ## 13. Known architectural risks
 

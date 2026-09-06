@@ -1,8 +1,26 @@
 # Security model
 
-> **Status:** Planning. Describes the controls Release 1 will implement and the ones deliberately
-> deferred. Updated at the end of every phase to reflect what is actually enforced in code.
-> Last reviewed: 2026-09-01
+> **Status:** Describes the controls Release 1 will implement and the ones deliberately deferred.
+> Updated at the end of every phase to reflect what is actually enforced in code.
+>
+> **Enforced in code today (after Phase 1):**
+>
+> - the same-origin topology of §3 — the browser reaches the API only through the web origin;
+> - the error-handling rules of §5: one envelope, stable codes, and a `500` that carries nothing but a
+>   generic message and a `request_id`, asserted by tests that look for the exception text, the
+>   database URL, the exception class name and a traceback in the response body;
+> - the audit immutability of §7 — `activity_log` refuses `UPDATE`, `DELETE` and `TRUNCATE` at the
+>   database, proved by tests that go around the ORM;
+> - the response headers and CORS policy of §8, including interactive API documentation disabled when
+>   `APP_ENV=production`;
+> - the secrets and configuration rules of §9: `.env` git-ignored, `.env.example` placeholders only,
+>   Azurite's emulator credentials labelled as such, and start-up guards that refuse a production
+>   process with a default session secret, a non-TLS database URL, or debug/docs/SQL-echo enabled.
+>
+> **Still design:** §2 (authentication), §3's session and CSRF mechanics, §4 (authorization) and §6
+> (uploads). The `users`, `user_identities` and `sessions` tables exist, but nothing reads or writes
+> them; there is no login, no cookie, no hashing and no policy code in the repository.
+> Last reviewed: 2026-09-02
 
 ## 1. What we are protecting
 
@@ -99,10 +117,12 @@ Server-side, always, with three complementary mechanisms (details in
 | Log in, change own password | yes | yes |
 | Create / edit / deactivate users | yes | no |
 | Read the staff directory (id, name, role) | yes | yes (needed to display assignees) |
-| Create / edit people | yes | yes, for operational work |
-| Search people directory | yes, full detail | yes, masked summary only (ADR-0027) |
+| Create a person | yes | yes |
+| Search the people directory | yes, full detail | yes, masked summary only (ADR-0027) |
+| Read full person detail | any person | only a person participating in a case currently assigned to them (ADR-0027) |
+| Edit a person | any person | only a person participating in a case currently assigned to them (ADR-0027) |
 | Archive a person | yes | no |
-| Create a case | yes | no in Release 1 — **(open: Q4)** |
+| Create a case | yes | **no** (ADR-0028) |
 | View a case | any case | assigned cases only |
 | Edit case operational fields | any case | assigned cases only |
 | Change case status | any case | assigned cases only |
@@ -116,7 +136,7 @@ Server-side, always, with three complementary mechanisms (details in
 | View a case's activity timeline | any case | assigned cases only |
 | Query the global audit log | yes | no |
 
-Two rules make this enforceable rather than aspirational:
+Three rules make this enforceable rather than aspirational:
 
 - **Deny by default in queries.** List and aggregate endpoints call actor-scoped repository methods;
   an `EMPLOYEE` query is scoped by an `EXISTS` predicate over active assignments. Dashboard KPIs are
@@ -125,6 +145,25 @@ Two rules make this enforceable rather than aspirational:
   are not assigned to, the API answers `404` — the response does not reveal whether the case exists.
   `403` is reserved for "you can see this resource but may not perform this action" (for example, an
   employee attempting to archive an assigned case). This distinction is asserted by tests.
+- **One predicate governs both reading and writing a person.** Read access to `PersonDetail` and the
+  right to `PATCH` a person are decided by the *same* function,
+  `PersonAccessService.has_full_access(actor, person_id)`, which is true for any `ADMIN` and for an
+  `EMPLOYEE` only when the person has an active participation in a case currently assigned to that
+  employee. Because both paths call one predicate, read and write scope cannot drift apart as the code
+  grows — the classic version of this bug is a carefully scoped read endpoint next to an update
+  endpoint that only checks the role.
+
+An employee therefore cannot edit a person they can merely find in the masked directory: the directory
+tells them the person exists so they can attach them to their case, and attaching them is what grants
+edit rights. A person visible only as a `PersonSummary` returns `403 PERSON_ACCESS_DENIED` on `PATCH`
+(the person's existence is already disclosed by search, so `404` would be dishonest rather than
+protective — this is the "visible but not permitted" case in the rule above).
+
+One consequence is deliberate and worth stating: an employee who creates a person and then spots a typo
+must attach that person to their case before they can correct it. The creation response returns
+`PersonDetail` because the employee authored those values, but the grant does not persist beyond the
+request. The alternative — a lingering "creator" permission — would accumulate quiet, invisible
+exceptions to the rule above, which is precisely what makes authorization models rot.
 
 The web app hides controls the current user cannot use, purely for usability. Every one of those
 controls has a backend test proving the endpoint refuses the request when called directly.
@@ -139,7 +178,12 @@ controls has a backend test proving the endpoint refuses the request when called
 - Errors return a single envelope (`{"error": {"code", "message", "details", "request_id"}}`) with
   stable machine-readable codes. Internal exception text, stack traces, SQL, driver messages and
   library versions are never returned; a `500` carries only a generic message and the `request_id`
-  that appears in the server log.
+  that appears in the server log. The full exception, with traceback, goes to the log under that same
+  `request_id`, which is how a support question is answered without the response ever carrying it.
+- Validation failures report the field and a machine-readable issue (`{"field": "count", "issue":
+  "int_parsing"}`) but never the rejected value. Pydantic's own `input` and `msg` are dropped on
+  purpose: echoing what was rejected is how a password or an ID number ends up in a log aggregator,
+  a browser console and a screenshot in a support ticket.
 - Hebrew user-facing wording lives in the web app and is selected by `code`, so error copy is
   reviewable by the business owner without touching the API (ADR-0014).
 
@@ -176,19 +220,36 @@ container plus an additive `scan_status` column consulted before download.
   session or CSRF tokens, file contents. Recorded as "changed" without values: `people.id_number` and
   any future high-sensitivity identifier — the audit trail proves *that* an identifier was edited
   without duplicating the identifier across thousands of rows.
-- Application logs are operational telemetry and are explicitly not the business audit trail.
+- Application logs are operational telemetry and are explicitly not the business audit trail. They
+  pass through a redaction processor that blanks a fixed set of keys — `password`, `token`,
+  `session_token`, `csrf_token`, `secret`, `session_secret`, `authorization`, `cookie`, `set-cookie`,
+  `database_url`, `id_number` — regardless of the call site. That is a backstop for a mistake, not a
+  reason to pass credentials to a logger. Request and response bodies are never logged, and neither is
+  the query string, which from Phase 4 carries search terms over personal data.
 
 ## 8. Transport, headers and CORS
 
 - HTTPS everywhere in production, terminated at the platform ingress; HSTS enabled there.
-- Response headers set by middleware: `X-Content-Type-Options: nosniff`, `Referrer-Policy:
-  strict-origin-when-cross-origin`, `X-Frame-Options: DENY` (the app is never framed), and a
-  Content-Security-Policy for the web app tightened during Phase 9.
-- CORS: with the same-origin proxy the application needs no cross-origin credentialed requests. A
-  strict, explicitly listed development origin (`http://localhost:3000`) is allowed for direct API
-  access during development; wildcard origins with credentials are impossible by configuration, and
-  production defaults to no cross-origin allowance.
-- Interactive API documentation (`/docs`) is enabled outside production only.
+- Response headers set by API middleware, on every response including error responses:
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`,
+  `X-Frame-Options: DENY` (the app is never framed).
+
+  **Responsibility boundary.** These three are set by the API because they are properties of an API
+  response and must hold even when a request never reaches the web tier — a direct call to port 8000,
+  or a `500` rendered above the router. Three headers are deliberately *not* set here:
+  Content-Security-Policy and Permissions-Policy, which govern what a document may load and are
+  meaningless on a JSON response, belong to the Next.js layer and are tightened in Phase 9; and
+  Strict-Transport-Security, which is a property of the origin's TLS termination, belongs to the
+  ingress. Setting HSTS from the application would be inert in development (plain HTTP) and duplicated
+  in production, where the ingress is the only component that knows the real scheme.
+- CORS: with the same-origin proxy the application needs no cross-origin credentialed requests. The
+  allowlist is explicit and environment-driven, defaulting to `http://localhost:3000` for direct API
+  access during development. `*` is rejected by a settings validator rather than by convention, and a
+  production process refuses to start with any origin configured at all, so credentialed wildcard CORS
+  is not a mistake this codebase can make.
+- Interactive API documentation (`/docs`, `/redoc`, `/openapi.json`) is enabled outside production
+  only. An explicit `API_DOCS_ENABLED=true` under `APP_ENV=production` is refused at start-up rather
+  than silently ignored, so the mistake surfaces in a deployment log instead of on the internet.
 
 ## 9. Secrets and configuration
 
@@ -196,9 +257,15 @@ container plus an additive `scan_status` column consulted before download.
   git-ignored; Azurite's well-known development credentials are the sole exception and exist only in
   local Compose configuration.
 - Production secrets live in Azure Key Vault and are injected as environment variables, so no
-  application code depends on a secret store (ADR-0020).
-- The application refuses to start in production with an unset or default `SESSION_SECRET`, a
-  non-TLS database URL, or debug/docs enabled.
+  application code depends on a secret store (ADR-0020). `SESSION_SECRET` is held as a `SecretStr`, so
+  it does not appear in a `repr()`, a validation error or a log line.
+- The application refuses to start when `APP_ENV=production` and any of the following is true: the
+  session secret is still the development placeholder, or shorter than 32 characters; the database URL
+  is the development placeholder, or does not request TLS (`ssl=require` / `sslmode=require`); `DEBUG`
+  is on; `API_DOCS_ENABLED` is on; `DB_ECHO` is on, which would write SQL — and therefore data — into
+  the logs; or `CORS_ALLOWED_ORIGINS` is non-empty. All violations are reported in one message, so a
+  misconfigured deployment is fixed in one pass rather than one restart at a time. These guards are
+  unit-tested individually.
 - Database credentials are per-environment; the runtime role has no `CREATE`/`DROP` rights in
   production, and migrations run as a separate role in a separate step.
 

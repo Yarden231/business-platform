@@ -1,9 +1,9 @@
 # Architecture decision records
 
-> **Status:** These are the decisions taken during Release 1 planning. All are `Accepted` as the plan
-> of record but none is yet reflected in code; a decision that turns out wrong during implementation is
-> superseded by a new record rather than edited away.
-> Last reviewed: 2026-09-01
+> **Status:** All records are `Accepted`. ADR-0001 to ADR-0029 were taken during Release 1 planning;
+> ADR-0030 onwards were taken during implementation and say which phase produced them. A decision that
+> turns out wrong is superseded by a new record rather than edited away.
+> Last reviewed: 2026-09-02
 
 Format: context → decision → consequences (including the cost we accept). Decisions the specification
 already fixed (Next.js, FastAPI, PostgreSQL, Azure, Hebrew RTL, monorepo) are not re-litigated here;
@@ -123,8 +123,10 @@ be hammered (mitigated by throttling).
 
 ## ADR-0008 — Gapless per-year case numbers from a counter table
 
-**Context.** `internal_case_number` is `YYYY-NNNN`, resets yearly, appears in court documents, and must
-be concurrency-safe. `MAX(n)+1` is explicitly forbidden and race-prone.
+**Context.** `internal_case_number` is `YYYY-NNNN`, resets yearly, and must be concurrency-safe.
+`MAX(n)+1` is explicitly forbidden and race-prone. This scheme is **introduced by this application** —
+the firm has no internal numbering system today, so there is no legacy series to preserve or seed from,
+and the number will be the firm's own reference on opinions, correspondence and invoices.
 
 **Decision.** A `case_number_sequences (year, last_value)` table incremented with a single
 `INSERT … ON CONFLICT (year) DO UPDATE SET last_value = last_value + 1 RETURNING last_value` inside the
@@ -132,25 +134,49 @@ case-creation transaction, with a `UNIQUE` constraint on `cases.internal_case_nu
 
 **Consequences.** Correct under concurrency (row lock serialises allocation) and **gapless**, because a
 rolled-back transaction returns the number — unlike a PostgreSQL sequence, which would burn it and leave
-holes in a court-visible numbering scheme. One statement covers both the first and the nth case of a
-year, with no runtime DDL. Cost: concurrent case creations for the same year serialise briefly, which is
-irrelevant at this volume.
+unexplained holes in a professional numbering series. One statement covers both the first and the nth
+case of a year, with no runtime DDL. Cases imported from Excel draw numbers from this same allocator, so
+there is no separate import numbering path. Cost: concurrent case creations for the same year serialise
+briefly, which is irrelevant at this volume.
 
 ---
 
-## ADR-0009 — One central case-transition service with a declarative graph
+## ADR-0009 — One transition service, with workflow policy resolved per `case_type`
 
-**Context.** Status drives the firm's workflow, and future automation must not reimplement the rules.
-Transition logic scattered across routers is exactly the debt to avoid.
+**Context.** Status drives the firm's workflow and future automation must not reimplement the rules, so
+transition logic scattered across routers is the debt to avoid. But only `RESOURCE_BALANCING` has a
+defined process today. Enforcing its graph on business valuations, damages work or municipal guidance
+would invent constraints the business has not agreed to, and staff would route around them by picking
+whatever status the validator happened to accept. Conversely, dropping validation entirely for those
+types would leave the resource-balancing process unprotected.
 
-**Decision.** `domain/case_workflow.py` holds the allowed-transition graph; `CaseWorkflowService.
-change_status` is the only code permitted to assign `Case.status`. It validates, writes
-`case_status_history`, emits the audit event and updates `last_activity_at` in one transaction.
+**Decision.** `CaseWorkflowService.change_status` remains the **only** code permitted to assign
+`Case.status`, and it always performs authorization, writes `case_status_history`, emits the audit
+event and updates `last_activity_at` in one transaction. What varies is *validation*, resolved from the
+case's type through a `WorkflowPolicy` protocol in `domain/case_workflow.py`:
 
-**Consequences.** Automation, scheduled jobs and future AI agents inherit validation, history and audit
-for free. Per-case-type workflows later become a lookup keyed by `case_type` in a single module. Cost:
-one indirection for a trivial column update, accepted deliberately. How strictly the graph is enforced
-in Release 1 is Q3 in [`open-questions.md`](open-questions.md).
+- `GraphWorkflowPolicy` — registered for `RESOURCE_BALANCING`, holding the documented transition graph.
+  An out-of-graph transition is rejected for everyone except `ADMIN`, and an admin override requires a
+  non-empty `reason`, which is persisted on the history row and in the audit event as an override.
+- `OpenWorkflowPolicy` — the default for every other case type in Release 1. Any status may follow any
+  status, because the business has no defined sequence for those engagements yet. No-op transitions
+  (same status to same status) are rejected regardless of policy.
+
+A registry maps `case_type` to policy, with `OpenWorkflowPolicy` as the fallback. Both policies are pure
+and unit-tested without a database.
+
+**Consequences.** The one process the firm has actually defined is protected, and the others are recorded
+faithfully instead of being forced through a fictional sequence. Automation, scheduled jobs and future AI
+agents inherit authorization, validation, history and audit by calling the same method. Defining a real
+workflow for another case type later is genuinely additive: write a graph, register it against the type,
+and that type's transitions start being validated with no change to the service, the API or the UI.
+
+Costs: two behaviours to hold in mind and to test; a status change on a non-resource-balancing case is
+audited but not *validated*, so a wrong status there is a data-quality issue rather than a rejected
+request; and the API cannot advertise a single transition rule, so the web app asks the server what is
+permitted rather than hardcoding the graph. Whether the documented resource-balancing graph matches the
+real process is still Q3 in [`open-questions.md`](open-questions.md) — the enforcement model is settled,
+its content needs the owner's review.
 
 ---
 
@@ -430,20 +456,160 @@ operational weakness that Release 2 removes.
 
 ---
 
-## ADR-0027 — Two person representations: directory summary and full detail
+## ADR-0027 — One person-access predicate governing detail reads and edits
 
 **Context.** Employees must search the people directory to add case participants, but the directory
 contains every party the firm has ever handled, including those in cases the employee is not assigned
 to. Full visibility turns an operational tool into a browsable dossier; no visibility makes employees
-dependent on an admin for routine work. Confirmed with the owner during planning.
+dependent on an admin for routine work. The first version of this record covered only *reading*, which
+left an inconsistency: an employee could be denied sight of a person's ID number yet still be permitted
+to overwrite it. Read and write scope must match. Confirmed with the owner during planning.
 
-**Decision.** Two response schemas. `PersonSummary` (name, organisation, masked ID number) is returned
-by directory search to any authenticated user. `PersonDetail` (ID number, address, phone, workplace,
-notes) is returned only to an `ADMIN`, or to an `EMPLOYEE` for a person participating in a case they
-are assigned to. The distinction is enforced by the service selecting the schema, not by the client
-choosing fields.
+**Decision.** A single predicate, `PersonAccessService.has_full_access(actor, person_id)`, is true for
+any `ADMIN`, and for an `EMPLOYEE` only when the person has an **active participation in a case
+currently assigned to that employee**. It governs three things at once:
 
-**Consequences.** Employees can do their job without gaining a firm-wide personal-data export, and the
-sensitive-field boundary is one testable decision rather than a per-endpoint judgement. Cost: two
-schemas and a visibility check per person read, plus a UI that must handle a summary that cannot be
-expanded — the Hebrew empty state explains that full detail requires assignment to a shared case.
+- **Representation** — `PersonDetail` (ID number, address, phone, workplace, notes) when true;
+  `PersonSummary` (name, organisation, masked ID) when false. Directory search returns summaries to any
+  authenticated user.
+- **Reads** — `GET /people/{id}` degrades to a summary rather than failing, since search already
+  disclosed existence.
+- **Writes** — `PATCH /people/{id}` requires the predicate to hold, and returns
+  `403 PERSON_ACCESS_DENIED` when it does not.
+
+Creating a person is open to both roles, and the creation response returns `PersonDetail` because the
+caller authored the values. That grant does not persist past the request. Archiving remains
+`ADMIN`-only. Enforcement is in the service layer, so it applies no matter which router, script or
+future automation calls it.
+
+**Consequences.** Employees can do their work without acquiring a firm-wide personal-data export, and
+because one function decides representation, read and write, those three cannot drift apart as
+endpoints multiply — the usual failure being a carefully scoped read sitting next to an update that
+checks only the role. Access is also self-repairing: it appears when a person is attached to the
+employee's case and disappears when the participation or the assignment is removed.
+
+Costs, accepted: two schemas plus one access check per person operation; a UI that must render a
+summary which cannot be expanded, explained by a Hebrew empty state; and one genuine wrinkle — an
+employee who creates a person and immediately spots a typo must attach that person to their case before
+correcting it. A lingering "creator" grant would have avoided the wrinkle at the price of an invisible
+standing exception to the rule, which is how authorization models rot.
+
+---
+
+## ADR-0028 — Case creation is restricted to `ADMIN` in Release 1
+
+**Context.** Specification §6 left this to policy. Creating a case is not an ordinary edit: it allocates
+an internal case number from a gapless per-year series, establishes the assignment set that defines who
+can see the case at all, and creates the record that every deadline, document and audit event hangs off.
+Confirmed with the owner during planning.
+
+**Decision.** Only `ADMIN` may create a case. Employees receive `403` from `POST /api/v1/cases`, and the
+rule is a role gate in `auth/policies.py` enforced in the service, not a hidden button. Employees retain
+full operational rights on cases assigned to them: editing fields, changing status, managing
+participants, creating document requirements, uploading and reviewing documents.
+
+**Consequences.** Number allocation and initial visibility stay under one pair of hands, and an employee
+cannot create a case that no one is assigned to — the shape of orphaned record that quietly disappears
+from every scoped list. Cost: the owner is in the loop for every new engagement, which is realistic at
+this firm's size but would need revisiting as the team grows. Relaxing it later is a one-line change to
+the policy plus its tests, because nothing else infers "can create" from a role.
+
+---
+
+## ADR-0029 — Participants and assignments are soft-removed
+
+**Context.** Specification §18 requires archive semantics for important business data, but §7 and §9
+defined `CaseParticipant` and `CaseAssignment` without any archival field while §17 defined a
+`PARTICIPANT_REMOVED` audit action — so a literal reading hard-deleted a row whose existence the audit
+log asserts. "Who represented party B in 2026?" and "who worked this case?" are questions this firm will
+be asked years later, sometimes under professional scrutiny. Confirmed with the owner during planning.
+
+**Decision.** Both tables carry `removed_at` and `removed_by`. Removal is an update, never a `DELETE`;
+the application exposes no hard-delete path for either. Active-row constraints are partial indexes
+scoped by `removed_at IS NULL`, so a person or employee can be removed and later re-added without
+tripping uniqueness. Queries return active rows by default and full history on request
+(`include_removed=true`).
+
+**Consequences.** Historical participation and assignment remain queryable, and the audit log's
+references always resolve to a row that still exists. Re-adding after removal works naturally. Costs:
+every query must filter on `removed_at`, centralised in repository methods so it cannot be forgotten one
+endpoint at a time; uniqueness has to be expressed as partial indexes rather than plain unique
+constraints; and the UI needs an explicit "show removed" affordance so history is discoverable without
+cluttering the default view.
+
+---
+
+## ADR-0030 — `activity_log.case_id` is an unconstrained UUID until cases exist (Phase 1)
+
+**Context.** The audit table has to exist from Phase 1, because Phase 2's authentication events need
+somewhere to land. `cases` does not exist until Phase 5. `activity_log.case_id` is meant to be a
+foreign key to it, and there is no way to declare a constraint against a table that has not been
+created.
+
+**Decision.** Ship `case_id` as a plain nullable `UUID`, indexed exactly as it will be later
+(`(case_id, occurred_at DESC)`). Phase 5's migration adds the constraint with a single
+`ALTER TABLE … ADD CONSTRAINT … FOREIGN KEY … ON DELETE RESTRICT`.
+
+**Consequences.** Additive and guaranteed to succeed: every row written before Phase 5 has
+`case_id IS NULL`, because nothing that happens before cases exist has a case to point at. The window
+in which a bad `case_id` could be written is Phases 1–4, during which no code sets the column at all.
+Rejected alternatives: deferring the audit table to Phase 5, which leaves Phase 2 with nowhere to
+record logins; and creating a stub `cases` table early, which is a fake entity occupying a real name
+that Phase 5 would then have to migrate around.
+
+---
+
+## ADR-0031 — No `CHECK` constraint on `activity_log.action` and `entity_type` (Phase 1)
+
+**Context.** ADR-0023 makes every enum-like column a `TEXT` column with a `CHECK` constraint. The
+audit action catalogue is enum-like, but unlike case status or participant role it grows in *every*
+remaining phase — each new feature adds verbs — and it is written on a path where failure is
+particularly bad.
+
+**Decision.** `action` and `entity_type` carry `btrim(…) <> ''` checks and nothing more. Validity is
+enforced by the `AuditAction` / `AuditEntityType` `StrEnum`s and the recorder's typed signature, with
+a unit test asserting the catalogue matches [`domain-model.md`](domain-model.md) §7.
+
+**Consequences.** An audit row is never rejected because the application learned a new verb before the
+database did — refusing to record that something happened, and rolling back the change it described,
+is a worse outcome than recording it under an unfamiliar name. Typos are caught at import time in
+Python rather than at runtime in PostgreSQL, which is earlier. Cost: a direct `INSERT` by a database
+superuser could write an unknown action; that is a threat the constraint would not have stopped either,
+since the same session could drop it. This is a deliberate, scoped exception to ADR-0023 and not a
+precedent for business columns, where the value set is stable and the failure mode is a rejected
+request rather than lost history.
+
+---
+
+## ADR-0032 — Request IDs are server-generated and client values are ignored (Phase 1)
+
+**Context.** Every request needs a correlation id in logs, in the error envelope and on audit rows.
+The common convention is to honour an inbound `X-Request-ID` so a trace survives across services.
+
+**Decision.** The outermost middleware always generates a fresh UUID4, binds it to a `ContextVar` and
+to structlog's context, and returns it as `X-Request-ID`. An inbound `X-Request-ID` is discarded.
+
+**Consequences.** The id in a log line, in a `500` response and on an `activity_log` row is always one
+this system minted, so correlation cannot be forged, collided, or used to inject content into a log
+field. There is no upstream service to trace from in Release 1, so nothing is lost. If distributed
+tracing arrives, the right answer is W3C `traceparent` with validation, which is a separate, deliberate
+feature rather than trusting an arbitrary header today.
+
+---
+
+## ADR-0033 — Development migrates at container start-up; production migrates in the pipeline (Phase 1)
+
+**Context.** A developer switching branches should not have to remember a migration command, and a
+one-container development stack has no deployment pipeline to run one from. Production is the opposite
+case: several replicas start at once.
+
+**Decision.** The Compose `api` service runs `alembic upgrade head` before `uvicorn`. Production will
+not: the deployment runs the upgrade once as its own step, before the new revision starts, under a
+database role that holds `CREATE`/`DROP` while the runtime role does not.
+
+**Consequences.** Development is one command and always consistent with the branch. Production avoids
+replicas racing through the same DDL, and a failed migration fails the deployment before traffic moves
+rather than taking containers down one at a time. The cost is a real constraint on how migrations are
+written: during a rollout the old revision is still serving, so a migration has to be compatible with
+it — additive first, destructive changes in a later release. That constraint exists in any zero-downtime
+deployment and is better stated now than discovered in Phase 10.

@@ -1,17 +1,25 @@
 # Specification review: contradictions, gaps and decisions needing a human
 
-> **Status:** Open, with five items decided. Produced during Release 1 architecture planning from a close
+> **Status:** Open, with seven items decided. Produced during Release 1 architecture planning from a close
 > reading of the specification. Section 2 items each carry a **recommended default** so implementation is
 > never blocked for lack of an answer, but items marked **blocking** should be answered before the phase
 > that needs them, because they affect data modelling that is expensive to reverse.
 >
-> Decided on 2026-09-01: Q1 (archival orthogonal to status → ADR-0025), Q2 (admin-issued temporary
-> passwords → ADR-0026), Q4 directory visibility (masked summary → ADR-0027), Q8 (Excel import becomes
-> Phase 8; specifics still needed), Q12 (GitHub + GitHub Actions).
+> **Decided:** Q1 archival orthogonal to status (ADR-0025) · Q2 admin-issued temporary passwords
+> (ADR-0026) · Q3 enforcement *model* — workflow policy per `case_type` (ADR-0009) · Q4 person access,
+> person edits and `ADMIN`-only case creation (ADR-0027, ADR-0028) · Q6 soft removal of participants and
+> assignments (ADR-0029) · Q8 Excel import is Phase 8, with the legacy-numbering premise corrected ·
+> Q12 GitHub + GitHub Actions.
 >
-> Still blocking, in phase order: Q7 (Phase 4), Q3 and Q6 and the Q4 case-creation part (Phase 5),
-> Q5 and Q9 (Phase 6), Q8 specifics (Phase 8). Q10 and Q11 are needed before production, not before code.
-> Last reviewed: 2026-09-01
+> **Still open, in phase order:** Q7 (Phase 4) · Q3's graph *content* (Phase 5, does not block the design)
+> · Q5 and Q9 (Phase 6) · Q8's mapping and scope, pending a real Excel export (Phase 8). Q10 and Q11 are
+> needed before production, not before code.
+>
+> Phase 1 note: the provisional answers to Q9c (25 MiB) and Q10 (8 hours idle, 12 hours absolute) are
+> now `Settings` defaults — `MAX_UPLOAD_SIZE_BYTES`, `SESSION_IDLE_TIMEOUT_SECONDS`,
+> `SESSION_ABSOLUTE_TIMEOUT_SECONDS` — so answering either is an environment variable, not a code
+> change. Nothing enforces them yet: uploads are Phase 6 and sessions are Phase 2.
+> Last reviewed: 2026-09-02
 
 ---
 
@@ -44,8 +52,8 @@ archiving, and `CLOSED` is the terminal workflow state. This deviates from §12 
 audit action. Taken literally, removing a participant hard-deletes a row whose existence the audit log
 asserts — and "who represented party B in 2026" becomes unanswerable. → **Q6.**
 
-**Proposed resolution.** `removed_at` / `removed_by` on both tables, with partial unique indexes scoped to
-active rows so a person can be re-added after removal.
+**Resolved (ADR-0029).** `removed_at` / `removed_by` on both tables, no application hard delete, and
+partial unique indexes scoped to active rows so a person or employee can be re-added after removal.
 
 ### C3 — Password login is required, but email sending is out of scope
 
@@ -137,8 +145,9 @@ specification's authorization model does not address this. It is a privacy decis
 one.
 
 **Resolved (ADR-0027).** Employees may search the whole directory but receive a masked summary; full
-detail requires being assigned to a case that person participates in. Whether employees may *create*
-cases remains open (Q4).
+detail — and the right to edit the person — requires being assigned to a case that person participates
+in, decided by a single predicate so read and write scope cannot diverge. Case creation is `ADMIN`-only
+(ADR-0028).
 
 ### C12 — Testing the numbering invariant conflicts with the standard test isolation pattern
 
@@ -196,28 +205,39 @@ self-service reset until Release 2 provides email. Recorded as **ADR-0026**.
 Still useful to know (does not block anything): roughly how many employees will use Release 1, which
 tells us how painful admin-mediated recovery will be in practice.
 
-### Q3 — How strictly are status transitions enforced? (**blocking, Phase 5**)
+### Q3 — Status transition enforcement (**enforcement model Decided; graph content open, Phase 5**)
 
-- **Recommended:** the graph in [`domain-model.md`](domain-model.md) §5.3 is enforced for everyone;
-  `ADMIN` may perform an out-of-graph transition when a mandatory `reason` is supplied, recorded in
-  history as an override. This keeps the data trustworthy without blocking real-world exceptions. Since
-  Q1 removed `ARCHIVED` from the enum, `CLOSED` is the terminal status, and reopening a closed case is
-  exactly such an admin override.
-- Alternatives: strict enforcement with no override (risks blocking legitimate work and inviting
-  workarounds), or free transitions with full history only (loses the value of typed statuses).
-- Also worth confirming: is the proposed happy path actually how the resource-balancing process runs, and
-  are there transitions the owner considers illegal (for example, returning from `OPINION_PUBLISHED` to
-  `WAITING_FOR_DOCUMENTS`)?
+**Decided (enforcement model):** workflow validation is resolved per `case_type`, because only
+`RESOURCE_BALANCING` has a defined business process today. That type is governed by the documented
+graph, with an `ADMIN` out-of-graph override that requires a mandatory `reason` and is recorded as an
+override in status history and audit. All other case types use an open policy in Release 1 — any status
+may follow any status — while still passing through `CaseWorkflowService` for authorization, status
+history and audit. Recorded as **ADR-0009**. Since Q1 removed `ARCHIVED` from the enum, `CLOSED` is the
+terminal status, and reopening a closed resource-balancing case is exactly such an override.
 
-### Q4 — Employee access to the people directory (**Decided**), and who may create cases (**open, Phase 5**)
+**Still open (the graph's content), and this is a business question rather than a technical one:**
 
-**Decided (directory):** employees may search all people but see only a masked summary — name,
-organisation and a masked ID number. Full detail is available to admins, and to an employee only for a
-person participating in a case they are assigned to. Recorded as **ADR-0027**.
+- Is the path in [`domain-model.md`](domain-model.md) §5.3 actually how a resource-balancing engagement
+  runs, in that order?
+- Which transitions do you consider illegal rather than merely unusual — for example, returning from
+  `OPINION_PUBLISHED` to `WAITING_FOR_DOCUMENTS`, or skipping `WAITING_FOR_ADVANCE_PAYMENT` when a
+  client has already paid?
+- Are there steps missing from the list entirely (a court hearing, a client meeting, a draft sent for
+  comment)?
 
-**Still open (case creation):** Release 1 currently restricts case creation to `ADMIN`, on the grounds
-that creating a case allocates a court-visible number and establishes assignments. Confirm whether
-employees should be able to create cases; if yes, it is a policy change in one place, not a redesign.
+Answering this changes the graph's contents, not the design, so Phase 5 can be built while it is
+settled — but the sooner it lands, the less status data needs correcting afterwards.
+
+### Q4 — People directory access and case creation — **Decided**
+
+**Decided (directory and person edits):** employees may search all people but see only a masked summary
+— name, organisation and a masked ID number. Full `PersonDetail`, **and the right to edit a person**, are
+available to admins for anyone, and to an employee only for a person participating in a case currently
+assigned to them. One predicate governs representation, reads and writes. Recorded as **ADR-0027**.
+
+**Decided (case creation):** only `ADMIN` may create a case in Release 1. Employees work on cases
+assigned to them but cannot create them, because creation allocates a case number and establishes the
+assignment set that determines visibility. Recorded as **ADR-0028**.
 
 ### Q5 — Document requirement status, and superseded submissions (**blocking, Phase 6**)
 
@@ -231,12 +251,12 @@ employees should be able to create cases; if yes, it is a policy change in one p
   value and needs a nod.
 - Alternative: fully manual requirement status (more flexible, can lie about the documents).
 
-### Q6 — Are participants and assignments removed or soft-removed? (**blocking, Phase 5**)
+### Q6 — Participant and assignment removal — **Decided**
 
-- **Recommended:** soft removal (`removed_at`, `removed_by`), consistent with §18 and with the
-  `PARTICIPANT_REMOVED` audit action; the UI shows active participants by default with history on demand.
-- Alternative: hard delete with the audit log as the only record (loses queryable history; not
-  recommended for legal work).
+**Decided:** soft removal. `case_participants` and `case_assignments` both carry `removed_at` and
+`removed_by`; the application permits no hard delete of either, and historical participation and
+assignment stay queryable (`include_removed=true`). Active-row uniqueness is expressed as partial
+indexes, so a person or employee can be removed and later re-added. Recorded as **ADR-0029**.
 
 ### Q7 — `id_number`: validation, uniqueness, and non-Israeli identifiers (**blocking, Phase 4**)
 
@@ -252,17 +272,24 @@ employees should be able to create cases; if yes, it is a policy change in one p
 
 **Decided:** existing cases must be imported from Excel, and that import is its own phase — now
 **Phase 8** in [`roadmap.md`](roadmap.md), sequenced after documents and the dashboard so the result can
-be reviewed in the real UI. Legacy case numbers are preserved as supplied, and each affected year's
-counter is seeded above the highest imported number so a newly created case can never collide with one
-already printed on paper.
+be reviewed in the real UI.
+
+**Corrected premise.** An earlier draft of this document assumed the firm already had internal case
+numbers in use, and specified seeding `case_number_sequences` above them. That was wrong.
+`internal_case_number` is introduced by this application; there is no legacy internal series to
+preserve, so nothing is seeded from spreadsheet data. Imported cases are allocated new numbers by the
+ordinary allocator, and `court_case_number` is imported wherever the export has one.
 
 **Still needed, before Phase 8 can be specified (a real Excel export answers most of it):**
 
 - A sample export of the current spreadsheet(s), including the header row and a few representative rows.
   Everything below is easier to answer from the file than from memory.
 - Roughly how many cases, people and years are involved, and which years are in scope.
-- Do the legacy numbers already follow `YYYY-NNNN`, or a different scheme? If different, they are stored
-  as-is and new cases start fresh — but then "gapless" only holds for years the new system numbers.
+- Which year should an imported case draw its number from — the year the engagement actually opened (so
+  a 2024 case becomes `2024-00NN`, which keeps the scheme meaningful) or the import year? The first is
+  the recommendation, and it needs the export to contain a reliable opening date.
+- Does the spreadsheet contain an identifier the firm actually refers to (a row key quoted in emails or
+  filenames)? If so it is worth retaining in a traceability column; if not, nothing is retained.
 - How are the parties and their lawyers recorded today (separate columns, one free-text cell, a separate
   contacts sheet)? This determines how much can be mapped automatically versus needs review.
 - How should legacy statuses map onto the Release 1 status list, and what should happen to rows whose

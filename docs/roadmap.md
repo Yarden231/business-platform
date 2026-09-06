@@ -1,8 +1,8 @@
 # Implementation roadmap
 
-> **Status:** Planning. Phase 0 has not started. This document is the agreed sequencing for Release 1;
-> each phase updates it with actual status on completion.
-> Last reviewed: 2026-09-01
+> **Status:** Phases 0 and 1 complete. Phases 2–10 are planned. This document is the agreed sequencing
+> for Release 1; each phase updates it with actual status on completion.
+> Last reviewed: 2026-09-02
 
 ## How phases are sequenced
 
@@ -21,25 +21,44 @@ Release 1 is Phases 0–9. Phase 10 is listed for continuity and is explicitly o
 Each phase carries the same definition of done: code + migrations + tests + green quality gates +
 documentation updated + a report of what changed.
 
-## Phase 0 — Foundation and toolchain
+## Phase 0 — Foundation and toolchain — **complete**
 
 **Goal:** a running, empty, fully linted monorepo that any developer can start in one command.
 
 - Monorepo layout (`apps/api`, `apps/web`, `docs`, `infra`, `scripts`), npm workspaces for the web
-  side, `uv` + `pyproject.toml` for the API, pinned language and image versions.
-- `docker-compose.yml` with `db`, `azurite`, `api`, `web`; named volumes; healthchecks; the
-  `/api/v1/*` same-origin proxy configured in Next.js.
+  side, `uv` + `pyproject.toml` + `uv.lock` for the API, pinned language and image versions.
+- `docker-compose.yml` with `db`, `azurite`, `api`, `web`; named volumes; healthchecks on all four; the
+  `/api/v1/*` same-origin proxy configured as a Next.js rewrite.
 - `.env.example` documenting every variable; `.gitignore`; git repository initialised.
-- Quality gates wired and passing on an empty codebase: `ruff` (format + lint), `mypy`,
-  `import-linter` contract, `pytest` (one smoke test), `eslint`, `prettier`, `tsc --noEmit`, `vitest`.
-- `scripts/` (or `Makefile`) entry points: `dev`, `check`, `test`, `migrate`, used identically by CI.
-- GitHub repository and GitHub Actions workflow running exactly the same gates as `scripts/check`
-  (decided during planning).
+- Quality gates wired and passing: `ruff` (format + lint), `mypy` (strict), `import-linter`,
+  `pytest`, `eslint`, `prettier`, `tsc --noEmit`, `vitest`, and the production Next.js build.
+- `scripts/` entry points: `install`, `dev`, `check`, `test`, `migrate`, used identically by CI.
+- GitHub repository and GitHub Actions workflow invoking `scripts/check` itself rather than restating
+  the commands (decided during planning).
 
 **Exit criteria:** `docker compose up` serves a Hebrew RTL "hello" page and a `/healthz` API response;
-`scripts/check` passes; no application logic exists yet.
+`scripts/check` passes; no application logic exists yet. **Met.**
 
-## Phase 1 — Backend platform
+What landed, precisely, so later phases do not have to guess:
+
+- `GET /healthz` returns `{"status": "ok"}` and touches nothing. It is mounted twice from one handler:
+  unversioned at `/healthz` for infrastructure probes (kept out of the OpenAPI document) and at
+  `/api/v1/healthz` for the browser, which reaches it through the web origin. `/readyz` is Phase 1.
+- The web application is a single Hebrew RTL page showing the organisation name, the product name and
+  live API connectivity. Its Hebrew strings already live in `apps/web/src/messages/he.ts`; the `t()`
+  accessor, the error-code mapper and the date/number helpers are Phase 3.
+- shadcn/ui is initialised (`components.json`, `cn()`, CSS-variable theme) with one primitive, `Badge`,
+  because the page uses it. The rest of the primitives arrive with the screens that need them.
+- **`import-linter` deviation.** The tool was configured and ran in `scripts/check` and CI, but the
+  layered contracts from [`architecture.md`](architecture.md) §4 could not be written yet — `api`,
+  `services`, `repositories`, `models` and `domain` did not exist, and creating empty packages so a
+  contract has something to check would be the fake structure this project avoids. Phase 0 enforced
+  the one boundary that was real: `app` may never import `tests`. **Resolved in Phase 1**, which added
+  the layered contracts as it created the layers.
+- No database tables, no Alembic, no settings object, no authentication, no domain code. `scripts/migrate`
+  existed and reported that there was nothing to migrate rather than inventing a migration.
+
+## Phase 1 — Backend platform — **complete**
 
 **Goal:** the API skeleton every later phase plugs into.
 
@@ -56,7 +75,32 @@ documentation updated + a report of what changed.
   transaction-per-test isolation, factories.
 
 **Exit criteria:** migrations up and down cleanly; an audit row can be written and cannot be updated
-or deleted (test proves the trigger fires); error envelope and logging verified by tests.
+or deleted (test proves the trigger fires); error envelope and logging verified by tests. **Met.**
+
+What landed, precisely:
+
+- Revision `0001` creates `pg_trgm`, `users`, `user_identities`, `sessions` and `activity_log`, plus
+  the `append_only_guard()` function and the two triggers that make `activity_log` reject `UPDATE`,
+  `DELETE` and `TRUNCATE`. `upgrade`, `downgrade` and re-`upgrade` are all covered on a throwaway
+  database, and a drift test fails the build if the models and the head revision disagree.
+- The layer packages that exist are `api`, `audit`, `core`, `db`, `domain`, `models` and `schemas`,
+  held apart by five `import-linter` contracts (architecture.md §4). `services`, `repositories`,
+  `auth` and `storage` are named in the contracts but not created, so the phase that needs one starts
+  with the boundary already enforced.
+- 118 tests: unit tests with no database (settings and production guards, error envelope, request id,
+  logging and redaction, security headers, CORS, docs policy, audit catalogue) and integration tests
+  against real PostgreSQL (schema shape, migrations, readiness including the database-down path, audit
+  immutability, transaction atomicity).
+- `scripts/migrate` runs `alembic upgrade head`; `scripts/check` and `scripts/test` load `.env` and
+  refuse to start without a reachable database; CI runs a PostgreSQL service and calls both scripts.
+- **Factories deviation.** The phase plan listed test factories. None were written: with four tables
+  and no business entities, the two rows the tests need are three lines of constructor each, and a
+  factory layer built before there is anything to vary would be guessed API rather than extracted
+  API. Phase 4 introduces them with `people`, the first entity with enough optional fields to warrant
+  one.
+- **No authentication.** `users`, `user_identities` and `sessions` are persistence only: nothing reads
+  or writes them, there is no hashing, no cookie, no login endpoint and no bootstrap admin. That is
+  Phase 2.
 
 ## Phase 2 — Identity and authorization
 
@@ -105,13 +149,25 @@ layout reviewed; no Hebrew string outside the catalog; `tsc --noEmit` clean with
 - Audit events for create/update/archive with the redaction policy applied to `id_number`.
 - UI: people list with search, create/edit forms (`react-hook-form` + `zod`), person detail, archive
   action visible only where permitted.
-- `PersonSummary` / `PersonDetail` split, so an employee's directory search returns masked results and
-  full detail only for people in their assigned cases (ADR-0027).
-- Tests: validation, duplicate ID, archived people excluded from pickers but still resolvable, and an
-  employee receiving summary-only data for a person outside their cases.
+- `PersonAccessService.has_full_access` plus the `PersonSummary` / `PersonDetail` split, used to decide
+  representation, detail reads **and** edit rights from one predicate (ADR-0027).
+- Authorization tests, all release-blocking:
+  - employee searching the directory receives `PersonSummary` with a masked ID, never `PersonDetail`;
+  - employee reading a person outside their cases receives `PersonSummary`, not `403`/`404`;
+  - employee `PATCH` on a person outside their cases → `403 PERSON_ACCESS_DENIED`, and the row is
+    unchanged afterwards;
+  - employee `PATCH` succeeds once that person participates in a case assigned to them;
+  - access disappears again when the participation or the assignment is removed;
+  - employee creating a person receives `PersonDetail` in the response but cannot `PATCH` it until it is
+    attached to one of their cases;
+  - admin reads and edits any person;
+  - employee cannot archive a person (`403`).
+- Other tests: Israeli ID validation, duplicate ID (`409`), archived people excluded from pickers but
+  still resolvable from historical cases.
 
-**Exit criteria:** the same person can be reused across cases in Phase 5 without duplication;
-authorization tests for every endpoint. Requires Q7.
+**Exit criteria:** the same person can be reused across cases in Phase 5 without duplication; every
+endpoint has an authorization test; no code path can serialise `PersonDetail` without passing the
+predicate; invariant 14 in [`domain-model.md`](domain-model.md) §9 is covered. Requires Q7.
 
 ## Phase 5 — Cases, participants and assignments
 
@@ -120,21 +176,37 @@ authorization tests for every endpoint. Requires Q7.
 - Migration for `cases`, `case_number_sequences`, `case_participants` (with the composite
   `(case_id, id)` unique index), `case_assignments` (with both partial unique indexes),
   `case_status_history` + its append-only trigger.
-- `domain/case_number.py`, `domain/case_workflow.py` (transition graph), `domain/activity.py`
-  (the `last_activity_at` allowlist).
-- `CaseService` (create with number allocation, update with optimistic concurrency, archive/unarchive),
-  `CaseWorkflowService.change_status`, participant and assignment services — all emitting audit events
-  and updating `last_activity_at` in the same transaction.
+- `domain/case_number.py`, `domain/activity.py` (the `last_activity_at` allowlist), and
+  `domain/case_workflow.py` — the `WorkflowPolicy` protocol, the `RESOURCE_BALANCING` graph, the default
+  open policy, and the registry keyed by `case_type` (ADR-0009).
+- `CaseService` (`ADMIN`-only creation with number allocation, update with optimistic concurrency,
+  archive/unarchive), `CaseWorkflowService.change_status`, participant and assignment services with soft
+  removal — all emitting audit events and updating `last_activity_at` in the same transaction.
 - Actor-scoped `CaseRepository` (this is where employee visibility is implemented).
-- Endpoints per [`api.md`](api.md) §5; UI: case list, create form, case detail with participants,
-  assignments, status change dialog and status history.
-- Tests: concurrent number allocation produces no duplicates and no gaps; employee cannot reach an
-  unassigned case (`404`); employee cannot archive (`403`); one primary assignee enforced by the
-  database; status history and audit written for every transition; `last_activity_at` updated for
-  writes and untouched by reads.
+- Endpoints per [`api.md`](api.md) §5, including `allowed_next_statuses` on case detail; UI: case list,
+  create form (admin only), case detail with participants, assignments, status change dialog driven by
+  `allowed_next_statuses`, and status history.
+- Authorization and workflow tests, all release-blocking:
+  - concurrent number allocation produces no duplicates and no gaps;
+  - employee cannot reach an unassigned case (`404`), cannot archive an assigned one (`403`), and cannot
+    create a case (`403`, ADR-0028);
+  - employee cannot manage assignments (`403`); admin can;
+  - one active primary assignee per case, enforced by the database;
+  - `RESOURCE_BALANCING`: an out-of-graph transition is rejected for an employee (`409`) and for an admin
+    without a reason (`422`), accepted for an admin with a reason, and recorded as an override in both
+    status history and audit;
+  - a non-`RESOURCE_BALANCING` case accepts a transition the graph would forbid, and still writes status
+    history and audit;
+  - no-op transitions rejected under both policies;
+  - participant and assignment removal is soft: the row survives with `removed_at`/`removed_by`, is
+    excluded from active lists, returned by `include_removed=true`, and can be re-added afterwards
+    (ADR-0029);
+  - status history and audit written for every transition; `last_activity_at` updated for writes and
+    untouched by reads.
 
-**Exit criteria:** the invariant list in [`domain-model.md`](domain-model.md) §9 items 1–5, 10–12 is
-covered by passing tests. Requires answers to Q3, Q6, and the case-creation part of Q4.
+**Exit criteria:** the invariant list in [`domain-model.md`](domain-model.md) §9 items 1–5, 10–13 and
+15–16 is covered by passing tests. Requires an answer to Q3 only — whether the documented graph matches
+the real resource-balancing process — which affects the graph's content, not the design.
 
 ## Phase 6 — Documents
 
@@ -190,19 +262,28 @@ real UI instead of by reading SQL.
   validation never partially imports.
 - Person de-duplication against `id_number` first, then name + organisation, with ambiguous matches
   reported for human resolution rather than merged automatically.
-- Legacy case numbers: preserved as supplied (they are already on paper). The
-  `case_number_sequences` row for each affected year is seeded above the highest imported number, so no
-  newly created case can ever collide with a legacy one. Requires Q8.
+- **Case numbers.** There is no legacy internal numbering to preserve — `internal_case_number` is
+  introduced by this application. Every imported case is allocated a fresh number by the ordinary
+  allocator, and `case_number_sequences` is never seeded from spreadsheet data. `court_case_number` is
+  imported wherever the export contains one. If the real export turns out to hold a meaningful
+  spreadsheet identifier (a row key the firm actually refers to), it is retained in a dedicated
+  traceability column added by this phase's migration — only if the file shows one exists, not
+  speculatively.
 - Every imported row is audited with a distinct `metadata.source = "legacy_import"` and the import run
   id, so imported facts are always distinguishable from facts the system observed. Imported cases get
   `last_activity_at` from their real last activity date, not from the import timestamp — otherwise the
   entire back catalogue would look freshly active and the stuck-case KPI would be meaningless on day one.
 - Tests: mapping unit tests over fixture spreadsheets, idempotency (running twice changes nothing),
-  de-duplication behaviour, number-collision impossibility after seeding, and validation-failure isolation.
+  de-duplication behaviour, allocation of unique internal numbers across an import batch, and
+  validation-failure isolation.
+
+**Scope and mapping are pending a real Excel export** (Q8). Everything above describes the shape of the
+phase; the column mapping, status mapping, participant-role inference, the year an imported case draws
+its number from, and whether documents in shared folders are in scope cannot be specified from
+assumptions and must not be guessed.
 
 **Exit criteria:** a full `validate` run on the real export reports zero unresolved errors; a `commit`
-run is reviewed in the UI by the owner; re-running produces no changes. Requires Q8 and a real Excel
-export to work from.
+run is reviewed in the UI by the owner; re-running produces no changes.
 
 ## Phase 9 — Release hardening
 
